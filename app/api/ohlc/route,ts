@@ -1,0 +1,44 @@
+import { NextResponse } from "next/server";
+
+function toISO(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const code = searchParams.get("code");
+  if (!code) {
+    return NextResponse.json({ error: "code is required" }, { status: 400 });
+  }
+
+  // ✅ まずは表示確認用のダミーOHLC（60本）
+  const today = new Date();
+  const out: Array<{ date: string; open: number; high: number; low: number; close: number }> = [];
+
+  let price = 1000 + (Number(code.slice(-2)) || 0) * 10;
+  for (let i = 59; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+
+    const open = price;
+    const move = Math.sin(i / 6) * 15 + (i % 5) * 2;
+    const close = Math.max(1, Math.round(open + move));
+    const high = Math.max(open, close) + (i % 7) * 3 + 5;
+    const low = Math.min(open, close) - (i % 6) * 3 - 5;
+
+    out.push({
+      date: toISO(d),
+      open: Math.round(open),
+      high: Math.round(high),
+      low: Math.round(low),
+      close: Math.round(close),
+    });
+
+    price = close;
+  }
+
+  return NextResponse.json(out);
+}
