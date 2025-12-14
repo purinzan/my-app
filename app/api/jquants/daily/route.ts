@@ -1,10 +1,22 @@
 import { NextResponse } from "next/server";
+import { tursoClient, db } from "scr/lib/db/client.ts";
+import { pricesDaily } from "src/lib/db/schema.ts";
 
 const BASE = "https://api.jquants.com/v1";
 
-import { tursoClient } from "@/lib/db/client";
+/**
+ * env 必須:
+ * - JQUANTS_REFRESH_TOKEN
+ * - TURSO_DATABASE_URL
+ * - TURSO_AUTH_TOKEN
+ *
+ * schema.ts で pricesDaily を定義している前提:
+ * code(text), date(text), open(real), high(real), low(real), close(real), volume(integer)
+ * PK: (code, date)
+ */
 
 async function ensurePricesDailyTable() {
+  // マイグレーション整備前の「まず動かす」用：無ければ作る
   await tursoClient.execute(`
     CREATE TABLE IF NOT EXISTS prices_daily (
       code TEXT NOT NULL,
@@ -19,25 +31,57 @@ async function ensurePricesDailyTable() {
   `);
 }
 
-
 async function getIdToken(refreshToken: string) {
-  const res = await fetch(`${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`, {
+  const url = new URL(`${BASE}/token/auth_refresh`);
+  url.searchParams.set("refreshtoken", refreshToken);
+
+  const res = await fetch(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
   });
+
   if (!res.ok) {
     throw new Error(`auth_refresh failed: ${res.status} ${await res.text()}`);
   }
+
   const data = (await res.json()) as { idToken: string };
+  if (!data?.idToken) throw new Error("auth_refresh: missing idToken");
   return data.idToken;
+}
+
+type JqDailyQuote = {
+  Date?: string; // "YYYY-MM-DD"
+  Open?: number;
+  High?: number;
+  Low?: number;
+  Close?: number;
+  Volume?: number;
+
+  // APIやプラン/レスポンス差異吸収（保険）
+  date?: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  volume?: number;
+};
+
+function toISODate(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  // ざっくり "YYYY-MM-DD" だけ通す
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  return null;
 }
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const code = searchParams.get("code"); // 例: 7203
-    const date = searchParams.get("date"); // 例: 2025-12-13 (任意)
+
+    const code = searchParams.get("code");
+    const date = searchParams.get("date"); // 例: 2025-12-12（営業日推奨）
+    const from = searchParams.get("from"); // 例: 2025-12-01
+    const to = searchParams.get("to");     // 例: 2025-12-31
 
     if (!code) {
       return NextResponse.json({ ok: false, error: "missing code" }, { status: 400 });
@@ -48,12 +92,24 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "missing JQUANTS_REFRESH_TOKEN" }, { status: 500 });
     }
 
+    // 先にテーブルを用意
+    await ensurePricesDailyTable();
+
+    // idToken取得
     const idToken = await getIdToken(refreshToken);
 
-    // 日足：/prices/daily_quotes?code=xxxx&date=YYYY-MM-DD（dateは任意）
+    // daily_quotes 呼び出し
     const url = new URL(`${BASE}/prices/daily_quotes`);
     url.searchParams.set("code", code);
-    if (date) url.searchParams.set("date", date);
+
+    // 優先順位：from/to → date → なし
+    const fromISO = toISODate(from);
+    const toISO = toISODate(to);
+    const dateISO = toISODate(date);
+
+    if (fromISO) url.searchParams.set("from", fromISO);
+    if (toISO) url.searchParams.set("to", toISO);
+    if (!fromISO && !toISO && dateISO) url.searchParams.set("date", dateISO);
 
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${idToken}` },
@@ -67,43 +123,30 @@ export async function GET(req: Request) {
       );
     }
 
-    const data = await res.json();
-    return NextResponse.json({ ok: true, code, date: date ?? null, data });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? "unknown error" }, { status: 500 });
-  }
-}
+    const data = (await res.json()) as { daily_quotes?: JqDailyQuote[] };
+    const quotes = Array.isArray(data?.daily_quotes) ? data.daily_quotes : [];
 
-import { db } from "@/lib/db/client";
-import { pricesDaily } from "@/lib/db/schema";
-import { NextResponse } from "next/server";
+    // DB保存用に整形
+    const rows = quotes
+      .map((q) => {
+        const d = toISODate(q.Date ?? q.date);
+        if (!d) return null;
 
-// ... 既存コードの中で daily_quotes を取った後に追加
+        return {
+          code: String(code),
+          date: d,
+          open: (q.Open ?? q.open ?? null) as number | null,
+          high: (q.High ?? q.high ?? null) as number | null,
+          low: (q.Low ?? q.low ?? null) as number | null,
+          close: (q.Close ?? q.close ?? null) as number | null,
+          volume: (q.Volume ?? q.volume ?? null) as number | null,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
 
-await ensurePricesDailyTable();
+    // 既にある (code,date) は無視してINSERT
+    if (rows.length > 0) {
+      await db.insert(pricesDaily).values(rows).onConflictDoNothing();
+    }
 
-// J-Quantsのレスポンスから rows を作る（キー名は実データに合わせて調整）
-const quotes = (data.daily_quotes ?? []) as any[];
-
-const rows = quotes.map((q) => ({
-  code: String(code),
-  date: String(q.Date ?? q.date),
-  open: q.Open ?? q.open ?? null,
-  high: q.High ?? q.high ?? null,
-  low: q.Low ?? q.low ?? null,
-  close: q.Close ?? q.close ?? null,
-  volume: q.Volume ?? q.volume ?? null,
-}));
-
-// すでに入ってる日付は無視（最短で安定）
-if (rows.length > 0) {
-  await db.insert(pricesDaily).values(rows).onConflictDoNothing();
-}
-
-return NextResponse.json({
-  ok: true,
-  code,
-  date: date ?? null,
-  saved: rows.length,
-  data,
-});
+    return Next
