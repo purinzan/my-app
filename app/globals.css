@@ -1,19 +1,21 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-/* ちょっとだけ“しっかり感”のためのベース */
+/* ちょっとだけ“しっかり感”のベース */
 :root {
   color-scheme: light;
 }
+
 html.dark {
   color-scheme: dark;
 }
 
 body {
-  @apply bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-50;
+  margin: 0;
+  background: white;
+  color: rgb(15 23 42); /* slate-900 相当 */
 }
 
-a {
-  @apply underline-offset-4;
+html.dark body {
+  background: rgb(2 6 23); /* slate-950 相当 */
+  color: rgb(248 250 252); /* slate-50 相当 */
 }

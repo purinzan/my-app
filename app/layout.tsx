@@ -4,7 +4,6 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "My App",
   description: "Next.js + TypeScript + Tailwind starter",
-  icons: [{ rel: "icon", url: "/favicon.ico" }],
 };
 
 export default function RootLayout({
