@@ -56,25 +56,55 @@ export default function DashboardClient() {
   const [err, setErr] = useState<string | null>(null);
 
   async function load() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const qs = new URLSearchParams({ code });
-      if (from) qs.set("from", from);
-      if (to) qs.set("to", to);
+  setLoading(true);
+  setErr(null);
 
-      const res = await fetch(`/api/prices?${qs.toString()}`, { cache: "no-store" });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error ?? "failed");
+  const qs = new URLSearchParams({ code });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
 
-      setRows(json.rows as Row[]);
-    } catch (e: any) {
-      setErr(e?.message ?? "error");
-      setRows([]);
-    } finally {
-      setLoading(false);
+  // 1) まずDBから読む
+  try {
+    const res1 = await fetch(`/api/prices?${qs.toString()}`, { cache: "no-store" });
+    const json1 = await res1.json();
+    if (!res1.ok || !json1.ok) throw new Error(json1.error ?? "failed to load prices");
+
+    const rows1 = (json1.rows ?? []) as Row[];
+    if (rows1.length > 0) {
+      setRows(rows1);
+      return;
     }
+
+    // 2) 0件ならJ-Quantsで同期（保存までやるAPI）
+    //    from/to があれば範囲、なければ date を指定（任意）
+    const syncQs = new URLSearchParams({ code });
+    if (from) syncQs.set("from", from);
+    if (to) syncQs.set("to", to);
+
+    // from/toが無い場合は、例として date を入れたいならここで指定（任意）
+    // syncQs.set("date", "2025-12-11");
+
+    const res2 = await fetch(`/api/jquants/daily?${syncQs.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const json2 = await res2.json();
+    if (!res2.ok || !json2.ok) throw new Error(json2.error ?? "failed to sync from J-Quants");
+
+    // 3) もう一度DBから読む（同期後）
+    const res3 = await fetch(`/api/prices?${qs.toString()}`, { cache: "no-store" });
+    const json3 = await res3.json();
+    if (!res3.ok || !json3.ok) throw new Error(json3.error ?? "failed to reload prices");
+
+    setRows((json3.rows ?? []) as Row[]);
+  } catch (e: any) {
+    setErr(e?.message ?? "error");
+    setRows([]);
+  } finally {
+    setLoading(false);
   }
+}
+
 
   const computed = useMemo(() => {
     const closes = rows.map((r) => r.close);
