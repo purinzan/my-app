@@ -1,10 +1,13 @@
-export default function Home() {
+import "./globals.css";
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <main className="min-h-screen p-10">
-      <h1 className="text-4xl font-bold">Hello</h1>
-      <p className="mt-4 text-lg text-gray-600">
-        Next.js (App Router) + TypeScript + Tailwind が動いています。
-      </p>
-    </main>
+    <html lang="ja">
+      <body>{children}</body>
+    </html>
   );
 }
