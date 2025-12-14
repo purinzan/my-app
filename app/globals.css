@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ちょっとだけ“しっかり感”のためのベース */
+:root {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-50;
+}
+
+a {
+  @apply underline-offset-4;
+}
