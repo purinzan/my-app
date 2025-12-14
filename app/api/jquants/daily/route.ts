@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { tursoClient, db } from "scr/lib/db/client.ts";
-import { pricesDaily } from "src/lib/db/schema.ts";
+import { tursoClient, db } from "@/lib/db/client";
+import { pricesDaily } from "@/lib/db/schema";
 
 const BASE = "https://api.jquants.com/v1";
 
@@ -149,4 +149,22 @@ export async function GET(req: Request) {
       await db.insert(pricesDaily).values(rows).onConflictDoNothing();
     }
 
-    return Next
+    return NextResponse.json({
+      ok: true,
+      code,
+      query: {
+        date: dateISO ?? null,
+        from: fromISO ?? null,
+        to: toISO ?? null,
+      },
+      fetched: quotes.length,
+      saved: rows.length,
+      sample: rows.slice(0, 3),
+    });
+  } catch (e: any) {
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "unknown error" },
+      { status: 500 }
+    );
+  }
+}
