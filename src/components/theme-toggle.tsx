@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-function getInitialTheme(): "light" | "dark" {
-  if (typeof window === "undefined") return "light";
+type Theme = "light" | "dark";
+
+function getInitialTheme(): Theme {
   const saved = window.localStorage.getItem("theme");
   if (saved === "dark" || saved === "light") return saved;
   const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
@@ -11,20 +12,30 @@ function getInitialTheme(): "light" | "dark" {
 }
 
 export default function ThemeToggle() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
-  const label = useMemo(() => (theme === "dark" ? "Dark" : "Light"), [theme]);
+  const [mounted, setMounted] = useState(false);
+  const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
+    setMounted(true);
     const t = getInitialTheme();
     setTheme(t);
     document.documentElement.classList.toggle("dark", t === "dark");
   }, []);
 
+  const label = useMemo(() => (theme === "dark" ? "Dark" : "Light"), [theme]);
+
   function toggle() {
-    const next = theme === "dark" ? "light" : "dark";
+    const next: Theme = theme === "dark" ? "light" : "dark";
     setTheme(next);
     window.localStorage.setItem("theme", next);
     document.documentElement.classList.toggle("dark", next === "dark");
+  }
+
+  // ★ これが肝：SSRと最初のクライアント描画を一致させる
+  if (!mounted) {
+    return (
+      <span className="inline-flex h-[34px] w-[92px] rounded-full border border-slate-200 dark:border-slate-800" />
+    );
   }
 
   return (
