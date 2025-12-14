@@ -54,10 +54,22 @@ export default function DashboardClient() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState<string>("");
 
   async function load() {
   setLoading(true);
   setErr(null);
+  const codeClean = code.trim();
+
+  try {
+    const nameQs = new URLSearchParams({ code: codeClean });
+    if (to) nameQs.set("date", to);
+    const nameRes = await fetch(`/api/jquants/company?${nameQs.toString()}`, { cache: "no-store" });
+    const nameJson = await nameRes.json();
+    setCompanyName(nameJson?.companyName ?? "");
+  } catch {
+    setCompanyName("");
+  }
 
   const qs = new URLSearchParams({ code });
   if (from) qs.set("from", from);
@@ -151,6 +163,7 @@ export default function DashboardClient() {
       <div>
         <h1 className="text-2xl font-bold">銘柄データ</h1>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+          {companyName ? `（${companyName}）` : ""}
           Tursoの prices_daily から読み出して、表→グラフ→軽い分析を表示します。
         </p>
       </div>
@@ -243,7 +256,7 @@ export default function DashboardClient() {
       {/* 表 */}
       <div className="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
         <div className="text-sm font-semibold">日足（prices_daily）</div>
-        <div className="mt-3 overflow-auto">
+        <div className="mt-3 max-h-[420px] overflow-y-auto overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
           <table className="min-w-[900px] text-left text-sm">
             <thead className="text-xs text-slate-600 dark:text-slate-300">
               <tr>
