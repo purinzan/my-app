@@ -2,6 +2,24 @@ import { NextResponse } from "next/server";
 
 const BASE = "https://api.jquants.com/v1";
 
+import { tursoClient } from "@/lib/db/client";
+
+async function ensurePricesDailyTable() {
+  await tursoClient.execute(`
+    CREATE TABLE IF NOT EXISTS prices_daily (
+      code TEXT NOT NULL,
+      date TEXT NOT NULL,
+      open REAL,
+      high REAL,
+      low REAL,
+      close REAL,
+      volume INTEGER,
+      PRIMARY KEY (code, date)
+    );
+  `);
+}
+
+
 async function getIdToken(refreshToken: string) {
   const res = await fetch(`${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`, {
     method: "POST",
@@ -55,3 +73,37 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: e?.message ?? "unknown error" }, { status: 500 });
   }
 }
+
+import { db } from "@/lib/db/client";
+import { pricesDaily } from "@/lib/db/schema";
+import { NextResponse } from "next/server";
+
+// ... 既存コードの中で daily_quotes を取った後に追加
+
+await ensurePricesDailyTable();
+
+// J-Quantsのレスポンスから rows を作る（キー名は実データに合わせて調整）
+const quotes = (data.daily_quotes ?? []) as any[];
+
+const rows = quotes.map((q) => ({
+  code: String(code),
+  date: String(q.Date ?? q.date),
+  open: q.Open ?? q.open ?? null,
+  high: q.High ?? q.high ?? null,
+  low: q.Low ?? q.low ?? null,
+  close: q.Close ?? q.close ?? null,
+  volume: q.Volume ?? q.volume ?? null,
+}));
+
+// すでに入ってる日付は無視（最短で安定）
+if (rows.length > 0) {
+  await db.insert(pricesDaily).values(rows).onConflictDoNothing();
+}
+
+return NextResponse.json({
+  ok: true,
+  code,
+  date: date ?? null,
+  saved: rows.length,
+  data,
+});
