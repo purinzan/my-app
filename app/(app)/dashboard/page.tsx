@@ -26,7 +26,9 @@ export default function DashboardPage() {
       </section>
 
       {/* ここから動く部分 */}
-      <DashboardClient />
+      <div className="min-w-0">
+        <DashboardClient />
+      </div>
     </div>
   );
 }
