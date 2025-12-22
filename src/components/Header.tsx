@@ -1,7 +1,7 @@
 import Link from "next/link";
 import ThemeToggle from "./theme-toggle";
 
-export default function SiteHeader() {
+export default function Header() {
   return (
     <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
@@ -11,7 +11,7 @@ export default function SiteHeader() {
             <div className="leading-tight">
               <div className="text-sm font-semibold">My App</div>
               <div className="text-xs text-slate-500 dark:text-slate-400">
-                Web starter
+                Documentation
               </div>
             </div>
           </div>
