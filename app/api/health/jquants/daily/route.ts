@@ -51,7 +51,8 @@ export async function GET(req: Request) {
 
     const data = await res.json();
     return NextResponse.json({ ok: true, code, date: date ?? null, data });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? "unknown error" }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "unknown error";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

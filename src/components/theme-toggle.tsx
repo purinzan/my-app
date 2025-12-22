@@ -16,6 +16,8 @@ export default function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
+    // We intentionally hydrate client-only state after mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
     const t = getInitialTheme();
     setTheme(t);
