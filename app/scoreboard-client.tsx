@@ -13,6 +13,8 @@ type Item = {
   mom_n_days: number;
 };
 
+type MetricKey = "score" | "ret_mean" | "volchg_ratio" | "volat_rto_mean" | "mom_n_days";
+
 type Api = {
   ok: boolean;
   range: { from: string; to: string };
@@ -89,6 +91,25 @@ export default function ScoreboardClient() {
   }
 
   const rows = useMemo(() => api?.items ?? [], [api]);
+
+  const rankedTables = useMemo(
+    () =>
+      (
+        [
+          { key: "score", label: "総合スコア", precision: 4, description: "重み付け後のスコア" },
+          { key: "ret_mean", label: "ret_mean", precision: 6, description: "平均リターン" },
+          { key: "volchg_ratio", label: "volchg_ratio", precision: 4, description: "出来高変化率" },
+          { key: "volat_rto_mean", label: "volat_rto_mean", precision: 6, description: "ボラティリティ" },
+          { key: "mom_n_days", label: "mom_n_days", precision: 6, description: "モメンタム" },
+        ] satisfies { key: MetricKey; label: string; precision: number; description: string }[]
+      ).map((metric) => ({
+        ...metric,
+        rows: [...rows]
+          .sort((a, b) => (Number(b[metric.key]) || 0) - (Number(a[metric.key]) || 0))
+          .map((item, index) => ({ ...item, rank: index + 1 })),
+      })),
+    [rows],
+  );
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
@@ -180,44 +201,47 @@ export default function ScoreboardClient() {
         </div>
       ) : null}
 
-      <div className="mt-4 overflow-x-auto">
-        <table className="min-w-[980px] w-full border-separate border-spacing-y-2">
-          <thead>
-            <tr className="text-left text-xs font-semibold text-slate-600 dark:text-slate-300">
-              <th className="px-2">Rank</th>
-              <th className="px-2">Code</th>
-              <th className="px-2">Company</th>
-              <th className="px-2 text-right">Score</th>
-              <th className="px-2 text-right">ret_mean</th>
-              <th className="px-2 text-right">volchg_ratio</th>
-              <th className="px-2 text-right">volat_rto_mean</th>
-              <th className="px-2 text-right">mom_n_days</th>
-            </tr>
-          </thead>
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {rankedTables.map(({ key, label, precision, description, rows: rankedRows }) => (
+          <div key={key} className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+            <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-100">
+              {label}
+              <span className="ml-2 text-xs font-normal text-slate-500">{description}</span>
+            </div>
 
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-2 py-8 text-sm text-slate-500">
-                  まだランキングが出ていません
-                </td>
-              </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.code} className="rounded-xl bg-slate-50 text-sm dark:bg-slate-900/40">
-                  <td className="px-2 py-2">{r.rank}</td>
-                  <td className="px-2 py-2 font-mono">{r.code}</td>
-                  <td className="px-2 py-2">{r.company?.CompanyName ?? r.company?.CompanyNameEnglish ?? "-"}</td>
-                  <td className="px-2 py-2 text-right font-semibold">{fmt(r.score, 4)}</td>
-                  <td className="px-2 py-2 text-right">{fmt(r.ret_mean, 6)}</td>
-                  <td className="px-2 py-2 text-right">{fmt(r.volchg_ratio, 4)}</td>
-                  <td className="px-2 py-2 text-right">{fmt(r.volat_rto_mean, 6)}</td>
-                  <td className="px-2 py-2 text-right">{fmt(r.mom_n_days, 6)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+            <div className="overflow-x-auto">
+              <table className="min-w-[520px] w-full border-separate border-spacing-y-1">
+                <thead>
+                  <tr className="text-left text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    <th className="px-2">Rank</th>
+                    <th className="px-2">Code</th>
+                    <th className="px-2">Company</th>
+                    <th className="px-2 text-right">{key === "score" ? "Score" : label}</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {rankedRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-2 py-6 text-sm text-slate-500">
+                        まだランキングが出ていません
+                      </td>
+                    </tr>
+                  ) : (
+                    rankedRows.map((r) => (
+                      <tr key={r.code} className="rounded-xl bg-slate-50 text-sm dark:bg-slate-900/40">
+                        <td className="px-2 py-1">{r.rank}</td>
+                        <td className="px-2 py-1 font-mono">{r.code}</td>
+                        <td className="px-2 py-1">{r.company?.CompanyName ?? r.company?.CompanyNameEnglish ?? "-"}</td>
+                        <td className="px-2 py-1 text-right font-semibold">{fmt(r[key as MetricKey], precision)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
