@@ -27,6 +27,12 @@ To learn more about Next.js, take a look at the following resources:
 - [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
 - [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
+## API
+
+- `GET /api/users?id=<userId>`
+  - Success: `200 OK` with `{ ok: true, user: { id: string } }`
+  - Validation error: `400 Bad Request` with `{ ok: false, error: string }`
+
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
 ## Deploy on Vercel

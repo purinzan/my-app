@@ -1,4 +1,4 @@
-import SiteHeader from "@/components/site-header";
+import Header from "@/components/Header";
 import SiteFooter from "@/components/site-footer";
 import Link from "next/link";
 
@@ -20,7 +20,7 @@ function Card({
 export default function Home() {
   return (
     <div className="min-h-screen">
-      <SiteHeader />
+      <Header />
 
       <main className="mx-auto max-w-6xl px-4">
         {/* Hero */}
