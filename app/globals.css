@@ -11,11 +11,15 @@ html.dark {
 
 body {
   margin: 0;
-  background: white;
+  background-color: white;
+  background-image: radial-gradient(circle at 8px 8px, rgba(148, 163, 184, 0.22) 1px, transparent 0);
+  background-size: 24px 24px;
   color: rgb(15 23 42); /* slate-900 相当 */
 }
 
 html.dark body {
-  background: rgb(2 6 23); /* slate-950 相当 */
+  background-color: rgb(2 6 23); /* slate-950 相当 */
+  background-image: radial-gradient(circle at 8px 8px, rgba(148, 163, 184, 0.18) 1px, transparent 0);
+  background-size: 24px 24px;
   color: rgb(248 250 252); /* slate-50 相当 */
 }
