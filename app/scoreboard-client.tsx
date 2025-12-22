@@ -29,6 +29,14 @@ function fmt(n: number, d = 4) {
   return Number.isFinite(n) ? n.toFixed(d) : "";
 }
 
+function clampNumber(input: string, fallback: number, { min, max }: { min?: number; max?: number } = {}) {
+  const n = Number(input);
+  if (!Number.isFinite(n)) return fallback;
+  if (min !== undefined && n < min) return min;
+  if (max !== undefined && n > max) return max;
+  return n;
+}
+
 export default function ScoreboardClient() {
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [monthsBack, setMonthsBack] = useState(3);
@@ -47,8 +55,14 @@ export default function ScoreboardClient() {
   const [api, setApi] = useState<Api | null>(null);
 
   async function run() {
+    if (!to) {
+      setErr("日付を入力してください (YYYY-MM-DD)");
+      return;
+    }
+
     setLoading(true);
     setErr("");
+    setApi(null);
     try {
       const qs = new URLSearchParams();
       qs.set("to", to);
@@ -96,7 +110,7 @@ export default function ScoreboardClient() {
             min={1}
             max={24}
             value={monthsBack}
-            onChange={(e) => setMonthsBack(Number(e.target.value))}
+            onChange={(e) => setMonthsBack((prev) => clampNumber(e.target.value, prev, { min: 1, max: 24 }))}
             className="mt-1 w-24 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950"
           />
         </div>
@@ -108,7 +122,7 @@ export default function ScoreboardClient() {
             min={10}
             max={500}
             value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
+            onChange={(e) => setLimit((prev) => clampNumber(e.target.value, prev, { min: 10, max: 500 }))}
             className="mt-1 w-24 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950"
           />
         </div>
@@ -134,23 +148,23 @@ export default function ScoreboardClient() {
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-          <div className="text-slate-500">w_ret</div>
-          <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_ret} onChange={(e) => setWRet(Number(e.target.value))} />
+          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+            <div className="text-slate-500">w_ret</div>
+            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_ret} onChange={(e) => setWRet((prev) => clampNumber(e.target.value, prev))} />
+          </div>
+          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+            <div className="text-slate-500">w_volchg</div>
+            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_volchg} onChange={(e) => setWVolchg((prev) => clampNumber(e.target.value, prev))} />
+          </div>
+          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+            <div className="text-slate-500">w_volat</div>
+            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_volat} onChange={(e) => setWVolat((prev) => clampNumber(e.target.value, prev))} />
+          </div>
+          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+            <div className="text-slate-500">w_mom</div>
+            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_mom} onChange={(e) => setWMom((prev) => clampNumber(e.target.value, prev))} />
+          </div>
         </div>
-        <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-          <div className="text-slate-500">w_volchg</div>
-          <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_volchg} onChange={(e) => setWVolchg(Number(e.target.value))} />
-        </div>
-        <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-          <div className="text-slate-500">w_volat</div>
-          <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_volat} onChange={(e) => setWVolat(Number(e.target.value))} />
-        </div>
-        <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-          <div className="text-slate-500">w_mom</div>
-          <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_mom} onChange={(e) => setWMom(Number(e.target.value))} />
-        </div>
-      </div>
 
       {err ? (
         <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">

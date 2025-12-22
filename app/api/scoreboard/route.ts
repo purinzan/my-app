@@ -246,7 +246,14 @@ async function loadCompanyMapFromPublicCsv() {
   if (cachedCompanyMap) return cachedCompanyMap;
 
   const csvPath = path.join(process.cwd(), "public", "listed_info.csv");
-  const buf = await readFile(csvPath);
+  let buf: Buffer;
+  try {
+    buf = await readFile(csvPath);
+  } catch (e: unknown) {
+    console.error(`[scoreboard] failed to read listed_info.csv: ${String((e as Error)?.message ?? e)}`);
+    cachedCompanyMap = new Map();
+    return cachedCompanyMap;
+  }
 
   let text = buf.toString("utf8").replace(/^\ufeff/, "");
   text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
