@@ -1,18 +1,96 @@
 import Header from "@/components/Header";
+import { FaqItem, FeatureCard, PricingCard } from "@/components/home/cards";
 import SiteFooter from "@/components/site-footer";
 import Link from "next/link";
 
-function Card({
-  title,
-  desc,
-}: {
-  title: string;
-  desc: string;
-}) {
+const HERO_TAGS = ["App Router", "TypeScript", "Tailwind"];
+
+const FEATURES = [
+  {
+    title: "App Router前提",
+    description: "layout/page/api で役割が明確あとから増やしても破綻しにくい。",
+  },
+  {
+    title: "ダークモード",
+    description: "依存なしでON/OFF。見た目の完成度が上がる。",
+  },
+  {
+    title: "ダッシュボード枠",
+    description: "アプリ側のレイアウトを先に用意。機能追加が速い。",
+  },
+];
+
+const PRICING_PLANS = [
+  {
+    name: "Free",
+    price: "$0",
+    features: (
+      <ul>
+        <li>・基本機能</li>
+        <li>・低めの上限</li>
+      </ul>
+    ),
+  },
+  {
+    name: "Pro",
+    price: "$9",
+    features: (
+      <ul>
+        <li>・上限アップ</li>
+        <li>・優先サポート</li>
+      </ul>
+    ),
+    highlight: true,
+  },
+  {
+    name: "Team",
+    price: "$29",
+    features: (
+      <ul>
+        <li>・チーム管理</li>
+        <li>・請求書対応</li>
+      </ul>
+    ),
+  },
+];
+
+const FAQS = [
+  {
+    question: "これは本番でも使える？",
+    answer: "使えます。次のPhaseで認証/DB/課金/制限を積むと、SaaSの形になります。",
+  },
+  {
+    question: "APIは動いてる？",
+    answer: "/api/health にアクセスするとJSONが返ります。",
+  },
+];
+
+function HeroPreview() {
   return (
-    <div className="rounded-2xl border border-slate-200 p-6 shadow-sm dark:border-slate-800">
-      <div className="text-sm font-semibold">{title}</div>
-      <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{desc}</p>
+    <div className="rounded-3xl border border-slate-200 p-6 shadow-sm dark:border-slate-800">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold">Preview</div>
+        <div className="text-xs text-slate-500 dark:text-slate-400">v0</div>
+      </div>
+      <div className="mt-4 space-y-3">
+        <div className="h-10 rounded-xl bg-slate-100 dark:bg-slate-900" />
+        <div className="h-10 rounded-xl bg-slate-100 dark:bg-slate-900" />
+        <div className="h-24 rounded-2xl bg-slate-100 dark:bg-slate-900" />
+        <div className="grid grid-cols-2 gap-3">
+          <div className="h-20 rounded-2xl bg-slate-100 dark:bg-slate-900" />
+          <div className="h-20 rounded-2xl bg-slate-100 dark:bg-slate-900" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HeroBadge() {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 dark:border-slate-800 dark:text-slate-300">
+      {HERO_TAGS.map((tag) => (
+        <span key={tag}>{tag}</span>
+      ))}
     </div>
   );
 }
@@ -23,19 +101,14 @@ export default function Home() {
       <Header />
 
       <main className="mx-auto max-w-6xl px-4">
-        {/* Hero */}
         <section className="py-16 md:py-24">
           <div className="grid gap-10 md:grid-cols-2 md:items-center">
             <div>
-              <p className="inline-flex items-center rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 dark:border-slate-800 dark:text-slate-300">
-                App Router / TypeScript / Tailwind
-              </p>
+              <HeroBadge />
 
               <h1 className="mt-4 text-4xl font-bold tracking-tight md:text-5xl">
                 ちゃんとした“土台”から作る
-                <span className="block text-slate-500 dark:text-slate-400">
-                  Web版スターター
-                </span>
+                <span className="block text-slate-500 dark:text-slate-400">Web版スターター</span>
               </h1>
 
               <p className="mt-4 text-lg text-slate-600 dark:text-slate-300">
@@ -63,39 +136,22 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Hero visual */}
-            <div className="rounded-3xl border border-slate-200 p-6 shadow-sm dark:border-slate-800">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold">Preview</div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">v0</div>
-              </div>
-              <div className="mt-4 space-y-3">
-                <div className="h-10 rounded-xl bg-slate-100 dark:bg-slate-900" />
-                <div className="h-10 rounded-xl bg-slate-100 dark:bg-slate-900" />
-                <div className="h-24 rounded-2xl bg-slate-100 dark:bg-slate-900" />
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="h-20 rounded-2xl bg-slate-100 dark:bg-slate-900" />
-                  <div className="h-20 rounded-2xl bg-slate-100 dark:bg-slate-900" />
-                </div>
-              </div>
-            </div>
+            <HeroPreview />
           </div>
         </section>
 
-        {/* Features */}
         <section id="features" className="py-16">
           <h2 className="text-2xl font-bold">特長</h2>
           <p className="mt-2 text-slate-600 dark:text-slate-300">
             “後から育てやすい”ための最小セットを最初から入れています。
           </p>
           <div className="mt-8 grid gap-4 md:grid-cols-3">
-            <Card title="App Router前提" desc="layout/page/api で役割が明確。あとから増やしても破綻しにくい。" />
-            <Card title="ダークモード" desc="依存なしでON/OFF。見た目の完成度が上がる。" />
-            <Card title="ダッシュボード枠" desc="アプリ側のレイアウトを先に用意。機能追加が速い。" />
+            {FEATURES.map((feature) => (
+              <FeatureCard key={feature.title} title={feature.title} description={feature.description} />
+            ))}
           </div>
         </section>
 
-        {/* Pricing (ダミー) */}
         <section id="pricing" className="py-16">
           <h2 className="text-2xl font-bold">料金（ダミー）</h2>
           <p className="mt-2 text-slate-600 dark:text-slate-300">
@@ -103,64 +159,24 @@ export default function Home() {
           </p>
 
           <div className="mt-8 grid gap-4 md:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 p-6 dark:border-slate-800">
-              <div className="text-sm font-semibold">Free</div>
-              <div className="mt-2 text-3xl font-bold">$0</div>
-              <ul className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">
-                <li>・基本機能</li>
-                <li>・低めの上限</li>
-              </ul>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 p-6 shadow-sm dark:border-slate-800">
-              <div className="text-sm font-semibold">Pro</div>
-              <div className="mt-2 text-3xl font-bold">$9</div>
-              <ul className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">
-                <li>・上限アップ</li>
-                <li>・優先サポート</li>
-              </ul>
-              <div className="mt-6">
-                <Link
-                  href="/dashboard"
-                  className="inline-flex rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white no-underline hover:opacity-90 dark:bg-white dark:text-slate-900"
-                >
-                  はじめる
-                </Link>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 p-6 dark:border-slate-800">
-              <div className="text-sm font-semibold">Team</div>
-              <div className="mt-2 text-3xl font-bold">$29</div>
-              <ul className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">
-                <li>・チーム管理</li>
-                <li>・請求書対応</li>
-              </ul>
-            </div>
+            {PRICING_PLANS.map((plan) => (
+              <PricingCard
+                key={plan.name}
+                name={plan.name}
+                price={plan.price}
+                features={plan.features}
+                highlight={plan.highlight}
+              />
+            ))}
           </div>
         </section>
 
-        {/* FAQ */}
         <section id="faq" className="py-16">
           <h2 className="text-2xl font-bold">FAQ</h2>
           <div className="mt-6 space-y-4">
-            <details className="rounded-2xl border border-slate-200 p-5 dark:border-slate-800">
-              <summary className="cursor-pointer text-sm font-semibold">
-                これは本番でも使える？
-              </summary>
-              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
-                使えます。次のPhaseで認証/DB/課金/制限を積むと、SaaSの形になります。
-              </p>
-            </details>
-
-            <details className="rounded-2xl border border-slate-200 p-5 dark:border-slate-800">
-              <summary className="cursor-pointer text-sm font-semibold">
-                APIは動いてる？
-              </summary>
-              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
-                <code className="rounded bg-slate-100 px-1 py-0.5 dark:bg-slate-900">/api/health</code> にアクセスするとJSONが返ります。
-              </p>
-            </details>
+            {FAQS.map((faq) => (
+              <FaqItem key={faq.question} question={faq.question} answer={faq.answer} />
+            ))}
           </div>
         </section>
       </main>
