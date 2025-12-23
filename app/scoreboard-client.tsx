@@ -111,6 +111,64 @@ export default function ScoreboardClient() {
     [rows],
   );
 
+  const csvRows = useMemo(() => {
+    return [...rows]
+      .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
+      .map((item, index) => ({
+        ...item,
+        rank: Number.isFinite(item.rank) ? item.rank : index + 1,
+      }));
+  }, [rows]);
+
+  const downloadCsv = () => {
+    if (csvRows.length === 0) return;
+
+    const headers: Array<keyof Item | "company_name"> = [
+      "rank",
+      "code",
+      "company_name",
+      "score",
+      "ret_mean",
+      "volchg_ratio",
+      "volat_rto_mean",
+      "mom_n_days",
+    ];
+
+    const escapeCell = (value: unknown) => {
+      if (value === null || value === undefined) return "";
+      const str = String(value);
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    const lines = [
+      headers.join(","),
+      ...csvRows.map((row) => {
+        const companyName = row.company?.CompanyName ?? row.company?.CompanyNameEnglish ?? "";
+        const values = [
+          row.rank,
+          row.code,
+          companyName,
+          row.score,
+          row.ret_mean,
+          row.volchg_ratio,
+          row.volat_rto_mean,
+          row.mom_n_days,
+        ];
+        return values.map(escapeCell).join(",");
+      }),
+    ];
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `scoreboard_${to || "data"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
       <div className="flex flex-wrap items-end gap-3">
@@ -165,6 +223,15 @@ export default function ScoreboardClient() {
           type="button"
         >
           {loading ? "実行中..." : "ランキング更新"}
+        </button>
+
+        <button
+          onClick={downloadCsv}
+          disabled={loading || csvRows.length === 0}
+          className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200"
+          type="button"
+        >
+          CSVで保存
         </button>
       </div>
 
