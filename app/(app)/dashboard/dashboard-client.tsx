@@ -1,6 +1,6 @@
 "use client";
 import Image from "next/image";
-import React, {useEffect, useMemo, useRef, useState} from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createChart, CandlestickSeries, LineSeries, HistogramSeries } from "lightweight-charts";
 
 
@@ -10,18 +10,6 @@ const GLOW =
   "ring-4 ring-amber-300 ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-950";
 const GUIDE_STORAGE_KEY = "guide:read-analyze:v2";
 const DEFAULT_MASCOT_SRC = "/mascot/robot.png";
-
-function scaleLinear(
-  v: number,
-  inMin: number,
-  inMax: number,
-  outMin: number,
-  outMax: number
-) {
-  if (inMax === inMin) return (outMin + outMax) / 2;
-  const t = (v - inMin) / (inMax - inMin);
-  return outMin + t * (outMax - outMin);
-}
 
 async function safeJson<T>(res: Response): Promise<T> {
   const text = await res.text();
@@ -314,6 +302,22 @@ function GuideSidebar({
         </div>
       </div>
 
+      <div className="mt-4 flex justify-end gap-2">
+        <button
+          className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-900"
+          onClick={onRestart}
+        >
+          クリア
+        </button>
+        <button
+          className="rounded-lg bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 dark:bg-white dark:text-slate-900"
+          disabled={s.nextDisabled}
+          onClick={onNext}
+        >
+          次へ
+        </button>
+      </div>
+
     </div>
   );
 }
@@ -398,6 +402,176 @@ function formatTime(iso: string) {
   } catch {
     return iso;
   }
+}
+
+function isoLocalDate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function useListedInfo() {
+  const [listed, setListed] = useState<ListedInfoRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const text = await fetchListedInfoCsv("/listed_info.csv");
+        if (!text) return;
+        const parsed = parseListedInfo(text);
+        if (!cancelled) setListed(parsed);
+      } catch {
+        // CSVが無い/読めない場合はサジェストなしで動作
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return listed;
+}
+
+function useCompanySuggestions(listed: ListedInfoRow[], companyName: string) {
+  return useMemo(() => {
+    const q = companyName.trim();
+    if (!q) return [] as ListedInfoRow[];
+    const qLower = q.toLowerCase();
+    return listed
+      .filter((x) => x.companyName.includes(q) || x.companyNameEnglish.toLowerCase().includes(qLower))
+      .slice(0, 12);
+  }, [companyName, listed]);
+}
+
+function useCodeSuggestions(listed: ListedInfoRow[], code: string) {
+  return useMemo(() => {
+    const q = code.trim().replace(/[^0-9]/g, "");
+    if (!q) return [] as ListedInfoRow[];
+    const qNorm = normalizeStockCode(q);
+    return listed
+      .filter((x) => x.code.startsWith(qNorm) || x.codeRaw.startsWith(q))
+      .slice(0, 12);
+  }, [code, listed]);
+}
+
+function useGuideProgress() {
+  const [guideOpen, setGuideOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const raw = localStorage.getItem(GUIDE_STORAGE_KEY);
+      const v = raw ? JSON.parse(raw) : null;
+      return typeof v?.open === "boolean" ? v.open : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [guideStep, setGuideStep] = useState<GuideStep>(() => {
+    if (typeof window === "undefined") return 0;
+    try {
+      const raw = localStorage.getItem(GUIDE_STORAGE_KEY);
+      const v = raw ? JSON.parse(raw) : null;
+      return v?.step === 0 || v?.step === 1 || v?.step === 2 ? v.step : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GUIDE_STORAGE_KEY, JSON.stringify({ open: guideOpen, step: guideStep }));
+    } catch {}
+  }, [guideOpen, guideStep]);
+
+  const handleNext = useCallback(() => {
+    setGuideStep((s) => (s < 2 ? ((s + 1) as GuideStep) : 2));
+  }, []);
+
+  const setAfterLoad = useCallback(() => {
+    setGuideStep((s) => (s === 0 ? 1 : s));
+  }, []);
+
+  const setAfterAnalysis = useCallback(() => {
+    setGuideStep(2);
+  }, []);
+
+  const resetGuide = useCallback(() => setGuideStep(0), []);
+
+  const syncGuideWithState = useCallback(
+    (hasData: boolean, analysisComplete: boolean) => {
+      if (!hasData) return resetGuide();
+      if (analysisComplete) return setGuideStep(2);
+      return setGuideStep(1);
+    },
+    [resetGuide]
+  );
+
+  return {
+    guideOpen,
+    guideStep,
+    setGuideOpen,
+    handleNext,
+    setAfterLoad,
+    setAfterAnalysis,
+    resetGuide,
+    syncGuideWithState,
+  };
+}
+
+function usePriceLoader() {
+  const [allData, setAllData] = useState<Candle[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const fetchPrices = useCallback(
+    async (params: { code: string; from: string; to: string; sync?: boolean }) => {
+      const { code, from, to, sync = true } = params;
+      setLoading(true);
+      setErr(null);
+
+      try {
+        const url = new URL("/api/prices", window.location.origin);
+        url.searchParams.set("code", code.trim());
+        url.searchParams.set("from", from);
+        url.searchParams.set("to", to);
+
+        if (sync) {
+          url.searchParams.set("sync", "1");
+          url.searchParams.set("syncMode", "auto");
+        } else {
+          url.searchParams.set("sync", "0");
+        }
+
+        const res = await fetch(url.toString(), { cache: "no-store" });
+        const json = await safeJson<PricesResponse>(res);
+
+        if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
+
+        const rows = (json.rows ?? [])
+          .filter((r) => r.open != null && r.high != null && r.low != null && r.close != null)
+          .map((r) => ({
+            date: String(r.date),
+            open: Number(r.open),
+            high: Number(r.high),
+            low: Number(r.low),
+            close: Number(r.close),
+            volume: r.volume == null ? null : Number(r.volume),
+          }));
+
+        const withMA = addSMA(addSMA(rows, 5, "ma5"), 25, "ma25");
+        setAllData(withMA);
+        return withMA.length > 0;
+      } catch (e: any) {
+        setErr(e?.message ?? "error");
+        setAllData([]);
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  return { allData, loading, err, fetchPrices };
 }
 
 function AiAnalysisPanel({
@@ -905,152 +1079,63 @@ function TvCandleChart({ data, height = 380 }: { data: Candle[]; height?: number
 }
 
 export default function DashboardClient() {
+  const listed = useListedInfo();
   const [code, setCode] = useState("7203");
-  const isoLocal = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-  const [to, setTo] = useState(() => isoLocal(new Date()));
+  const [to, setTo] = useState(() => isoLocalDate(new Date()));
   const [from, setFrom] = useState(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 3);
-    return isoLocal(d);
+    return isoLocalDate(d);
   });
-
-
-  const [allData, setAllData] = useState<Candle[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [info, setInfo] = useState<{ effectiveFrom?: string | null; effectiveTo?: string | null }>({});
-  const hasData = allData.length > 0;
-
-  const [guideOpen, setGuideOpen] = useState(true);
-  const [guideStep, setGuideStep] = useState<GuideStep>(0);
-  const [analysisDone, setAnalysisDone] = useState(false);
-
-  // listed_info.csv (会社名/銘柄コードのサジェスト用)
-  const [listed, setListed] = useState<ListedInfoRow[]>([]);
   const [companyName, setCompanyName] = useState("トヨタ自動車");
   const [openCompanySuggest, setOpenCompanySuggest] = useState(false);
   const [openCodeSuggest, setOpenCodeSuggest] = useState(false);
 
+  const { allData, loading, err, fetchPrices } = usePriceLoader();
+  const hasData = allData.length > 0;
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const text = await fetchListedInfoCsv("/listed_info.csv");
-        if (!text) return;
-        const parsed = parseListedInfo(text);
-        if (!cancelled) setListed(parsed);
-      } catch {
-        // CSVが無い/読めない場合はサジェストなしで動作
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const [analysisDone, setAnalysisDone] = useState(false);
+  const { guideOpen, guideStep, setGuideOpen, handleNext, setAfterAnalysis, syncGuideWithState } = useGuideProgress();
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(GUIDE_STORAGE_KEY);
-      if (!raw) return;
-      const v = JSON.parse(raw);
-      if (typeof v?.open === "boolean") setGuideOpen(v.open);
-      if (v?.step === 0 || v?.step === 1 || v?.step === 2) setGuideStep(v.step);
-    } catch {}
-  }, []);
+  const highlightLoad = guideOpen && guideStep === 0;
+  const highlightAnalyze = guideOpen && guideStep === 1;
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(GUIDE_STORAGE_KEY, JSON.stringify({ open: guideOpen, step: guideStep }));
-    } catch {}
-  }, [guideOpen, guideStep]);
+  const companySuggestions = useCompanySuggestions(listed, companyName);
+  const codeSuggestions = useCodeSuggestions(listed, code);
 
-  useEffect(() => {
-    if (!hasData) {
-      setGuideStep(0);
-      setAnalysisDone(false);
-      return;
-    }
-    setGuideStep((s) => (s === 0 ? 1 : s));
-  }, [hasData]);
-
-  useEffect(() => {
-    if (hasData && analysisDone) setGuideStep(2);
-  }, [hasData, analysisDone]);
-
-  const highlightLoad = guideOpen && !hasData;
-  const highlightAnalyze = guideOpen && hasData && !analysisDone;
-
-  const companySuggestions = useMemo(() => {
-    const q = companyName.trim();
-    if (!q) return [];
-    const qLower = q.toLowerCase();
-    return listed
-      .filter((x) => x.companyName.includes(q) || x.companyNameEnglish.toLowerCase().includes(qLower))
-      .slice(0, 12);
-  }, [companyName, listed]);
-
-  const codeSuggestions = useMemo(() => {
-    const q = code.trim().replace(/[^0-9]/g, "");
-    if (!q) return [];
-    const qNorm = normalizeStockCode(q);
-    return listed
-      .filter((x) => x.code.startsWith(qNorm) || x.codeRaw.startsWith(q))
-      .slice(0, 12);
-  }, [code, listed]);
-
-  function applyListing(x: ListedInfoRow) {
+  const applyListing = useCallback((x: ListedInfoRow) => {
     setCompanyName(x.companyName);
     setCode(x.code); // 末尾0を除去したコードを採用
     setOpenCompanySuggest(false);
     setOpenCodeSuggest(false);
-  }
+  }, []);
 
-  async function fetchPrices(sync = true) {
-    setLoading(true);
-    setErr(null);
+  const handleFetchPrices = useCallback(async () => {
+    setAnalysisDone(false);
+    const ok = await fetchPrices({ code, from, to, sync: true });
+    syncGuideWithState(ok, false);
+  }, [code, fetchPrices, from, syncGuideWithState, to]);
 
-    try {
-      const url = new URL("/api/prices", window.location.origin);
-      url.searchParams.set("code", code.trim());
-      url.searchParams.set("from", from);
-      url.searchParams.set("to", to);
+  const handleAnalysisDone = useCallback(() => {
+    setAnalysisDone(true);
+    setAfterAnalysis();
+  }, [setAfterAnalysis]);
 
-      if (sync) {
-        url.searchParams.set("sync", "1");
-        url.searchParams.set("syncMode", "auto");
-      } else {
-        url.searchParams.set("sync", "0");
-      }
+  const handleAnalysisClear = useCallback(() => {
+    setAnalysisDone(false);
+    syncGuideWithState(hasData, false);
+  }, [hasData, syncGuideWithState]);
 
-      const res = await fetch(url.toString(), { cache: "no-store" });
-      const json = await safeJson<PricesResponse>(res);
+  const handleRestartGuide = useCallback(() => {
+    setGuideOpen(true);
+    syncGuideWithState(hasData, analysisDone);
+  }, [analysisDone, hasData, setGuideOpen, syncGuideWithState]);
 
-      if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
-
-      const rows = (json.rows ?? [])
-        .filter((r) => r.open != null && r.high != null && r.low != null && r.close != null)
-        .map((r) => ({
-          date: String(r.date),
-          open: Number(r.open),
-          high: Number(r.high),
-          low: Number(r.low),
-          close: Number(r.close),
-          volume: r.volume == null ? null : Number(r.volume),
-        }));
-
-      setInfo({ effectiveFrom: json.effectiveFrom ?? null, effectiveTo: json.effectiveTo ?? null });
-
-      const withMA = addSMA(addSMA(rows, 5, "ma5"), 25, "ma25");
-      setAllData(withMA);
-    } catch (e: any) {
-      setErr(e?.message ?? "error");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const handleDownloadCsv = useCallback(() => {
+    const c = code.trim();
+    const csv = candlesToCsv(allData, c);
+    downloadCsv(`${c}_${from}_${to}.csv`, csv);
+  }, [allData, code, from, to]);
 
   return (
     <div className="flex gap-4">
@@ -1189,7 +1274,7 @@ export default function DashboardClient() {
                   highlightLoad ? "animate-pulse" : "",
                 ].join(" ")}
                 disabled={loading}
-                onClick={() => fetchPrices(true)}
+                onClick={handleFetchPrices}
               >
                 {loading ? "読み込み中..." : "読み込む"}
               </button>
@@ -1197,11 +1282,7 @@ export default function DashboardClient() {
               {hasData && (
                 <button
                   className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-900"
-                  onClick={() => {
-                    const c = code.trim();
-                    const csv = candlesToCsv(allData, c);
-                    downloadCsv(`${c}_${from}_${to}.csv`, csv);
-                  }}
+                  onClick={handleDownloadCsv}
                 >
                   CSV
                 </button>
@@ -1226,8 +1307,8 @@ export default function DashboardClient() {
               to={to}
               candles={allData}
               highlightAnalyze={highlightAnalyze}
-              onAnalysisDone={() => setAnalysisDone(true)}
-              onClear={() => setAnalysisDone(false)}
+              onAnalysisDone={handleAnalysisDone}
+              onClear={handleAnalysisClear}
             />
           </div>
         )}
@@ -1241,11 +1322,8 @@ export default function DashboardClient() {
           analysisDone={analysisDone}
           mascotSrc={DEFAULT_MASCOT_SRC}
           onClose={() => setGuideOpen(false)}
-          onNext={() => setGuideStep((s) => (s < 2 ? ((s + 1) as GuideStep) : 2))}
-          onRestart={() => {
-            setGuideOpen(true);
-            setGuideStep(hasData ? (analysisDone ? 2 : 1) : 0);
-          }}
+          onNext={handleNext}
+          onRestart={handleRestartGuide}
         />
       </div>
     </div>
