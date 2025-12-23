@@ -52,18 +52,35 @@ async function safeJson(res: Response) {
   }
 }
 
+async function fetchWithLog(url: string, init: RequestInit, label: string) {
+  try {
+    return await fetch(url, init);
+  } catch (e: any) {
+    console.error(
+      `[scoreboard][fetch] ${label} network error url=${url} message=${String(e?.message ?? e)}`
+    );
+    throw e;
+  }
+}
+
 async function getIdToken() {
   const refreshToken = process.env.JQUANTS_REFRESH_TOKEN;
   if (!refreshToken) throw new Error("ENV missing: JQUANTS_REFRESH_TOKEN");
 
-  const r = await fetch(`${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`, {
+  const url = `${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`;
+  const r = await fetchWithLog(url, {
     method: "POST",
     headers: { Accept: "application/json" },
     cache: "no-store",
-  });
+  }, "auth_refresh");
 
   const p = await safeJson(r);
-  if (!p.ok) throw new Error(`auth_refresh failed: ${p.text}`);
+  if (!p.ok) {
+    console.error(
+      `[scoreboard][fetch] auth_refresh bad status=${r.status} body=${p.text.slice(0, 200)}`
+    );
+    throw new Error(`auth_refresh failed: ${p.text}`);
+  }
   const idToken = String(p.json?.idToken ?? "");
   if (!idToken) throw new Error("idToken missing in auth_refresh response");
   return idToken;
@@ -74,13 +91,18 @@ async function fetchTradingDays(idToken: string, from: string, to: string) {
   url.searchParams.set("from", from);
   url.searchParams.set("to", to);
 
-  const r = await fetch(url.toString(), {
+  const r = await fetchWithLog(url.toString(), {
     headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
     cache: "no-store",
-  });
+  }, "trading_calendar");
 
   const p = await safeJson(r);
-  if (!p.ok) throw new Error(`trading_calendar failed: ${p.text}`);
+  if (!p.ok) {
+    console.error(
+      `[scoreboard][fetch] trading_calendar bad status=${r.status} body=${p.text.slice(0, 200)}`
+    );
+    throw new Error(`trading_calendar failed: ${p.text}`);
+  }
 
   const rows = Array.isArray(p.json?.trading_calendar) ? p.json.trading_calendar : [];
   const days = rows
@@ -102,13 +124,18 @@ async function fetchDailyQuotesAllPages(idToken: string, date: string) {
     url.searchParams.set("date", date);
     if (paginationKey) url.searchParams.set("pagination_key", paginationKey);
 
-    const r = await fetch(url.toString(), {
+    const r = await fetchWithLog(url.toString(), {
       headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
       cache: "no-store",
-    });
+    }, `daily_quotes ${date}`);
 
     const p = await safeJson(r);
-    if (!p.ok) throw new Error(`daily_quotes failed (${date}): ${p.text}`);
+    if (!p.ok) {
+      console.error(
+        `[scoreboard][fetch] daily_quotes bad status=${r.status} date=${date} body=${p.text.slice(0, 200)}`
+      );
+      throw new Error(`daily_quotes failed (${date}): ${p.text}`);
+    }
 
     const qs = Array.isArray(p.json?.daily_quotes) ? p.json.daily_quotes : [];
     for (const q of qs) {
