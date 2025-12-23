@@ -354,6 +354,7 @@ export async function GET(req: Request) {
 
   try {
     const to = u.searchParams.get("to") ?? ymd(new Date());
+    const fromParam = u.searchParams.get("from");
     const monthsBack = Math.max(1, Math.min(24, Number(u.searchParams.get("monthsBack") ?? 3)));
     const limit = Math.max(10, Math.min(500, Number(u.searchParams.get("limit") ?? 100)));
     const sync = (u.searchParams.get("sync") ?? "1") !== "0";
@@ -376,10 +377,34 @@ export async function GET(req: Request) {
     if (Number.isNaN(toDate.getTime())) {
       return NextResponse.json({ ok: false, error: "invalid to (YYYY-MM-DD)" }, { status: 400 });
     }
-    const from = ymd(addMonths(toDate, -monthsBack));
+    const fromValue = fromParam ?? ymd(addMonths(toDate, -monthsBack));
+    const fromDate = new Date(`${fromValue}T00:00:00`);
+    if (Number.isNaN(fromDate.getTime())) {
+      return NextResponse.json({ ok: false, error: "invalid from (YYYY-MM-DD)" }, { status: 400 });
+    }
+    if (fromDate > toDate) {
+      return NextResponse.json({ ok: false, error: "from must be <= to" }, { status: 400 });
+    }
+    const from = ymd(fromDate);
 
     if (debug) {
-      dbg.params = { to, from, monthsBack, limit, sync, force, n_ret, n_vol_short, n_vol_long, n_vola, n_mom, w_ret, w_volchg, w_volat, w_mom };
+      dbg.params = {
+        to,
+        from,
+        monthsBack: fromParam ? null : monthsBack,
+        limit,
+        sync,
+        force,
+        n_ret,
+        n_vol_short,
+        n_vol_long,
+        n_vola,
+        n_mom,
+        w_ret,
+        w_volchg,
+        w_volat,
+        w_mom,
+      };
     }
 
     // 会社マスタ
@@ -535,7 +560,9 @@ export async function GET(req: Request) {
       ok: true,
       range: { from, to },
       params: {
-        monthsBack,
+        from,
+        to,
+        monthsBack: fromParam ? null : monthsBack,
         limit,
         sync,
         force,

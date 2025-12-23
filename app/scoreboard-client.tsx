@@ -41,7 +41,11 @@ function clampNumber(input: string, fallback: number, { min, max }: { min?: numb
 
 export default function ScoreboardClient() {
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
-  const [monthsBack, setMonthsBack] = useState(3);
+  const [from, setFrom] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 3);
+    return d.toISOString().slice(0, 10);
+  });
   const [limit, setLimit] = useState(100);
 
   const [sync, setSync] = useState(true);
@@ -57,7 +61,7 @@ export default function ScoreboardClient() {
   const [api, setApi] = useState<Api | null>(null);
 
   async function run() {
-    if (!to) {
+    if (!from || !to) {
       setErr("日付を入力してください (YYYY-MM-DD)");
       return;
     }
@@ -67,8 +71,8 @@ export default function ScoreboardClient() {
     setApi(null);
     try {
       const qs = new URLSearchParams();
+      qs.set("from", from);
       qs.set("to", to);
-      qs.set("monthsBack", String(monthsBack));
       qs.set("limit", String(limit));
       qs.set("sync", sync ? "1" : "0");
       qs.set("force", force ? "1" : "0");
@@ -115,24 +119,22 @@ export default function ScoreboardClient() {
     <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
       <div className="flex flex-wrap items-end gap-3">
         <div>
+          <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">from</div>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="mt-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950"
+          />
+        </div>
+
+        <div>
           <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">to</div>
           <input
             type="date"
             value={to}
             onChange={(e) => setTo(e.target.value)}
             className="mt-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950"
-          />
-        </div>
-
-        <div>
-          <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">monthsBack</div>
-          <input
-            type="number"
-            min={1}
-            max={24}
-            value={monthsBack}
-            onChange={(e) => setMonthsBack((prev) => clampNumber(e.target.value, prev, { min: 1, max: 24 }))}
-            className="mt-1 w-24 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950"
           />
         </div>
 
