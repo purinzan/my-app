@@ -209,9 +209,9 @@ export default function ScoreboardClient() {
               <span className="ml-2 text-xs font-normal text-slate-500">{description}</span>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-x-auto overflow-y-auto">
               <table className="min-w-[520px] w-full border-separate border-spacing-y-1">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900/80">
                   <tr className="text-left text-xs font-semibold text-slate-600 dark:text-slate-300">
                     <th className="px-2">Rank</th>
                     <th className="px-2">Code</th>
