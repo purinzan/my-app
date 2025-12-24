@@ -1,7 +1,9 @@
 // src/lib/jquants.ts
 import { tursoClient } from "@/lib/db";
+import dns from "dns";
 
 const BASE = "https://api.jquants.com/v1";
+dns.setDefaultResultOrder("ipv4first");
 
 type Quote = {
   Date: string;
@@ -31,6 +33,42 @@ function log(rid: string | undefined, msg: string, obj?: any) {
   else console.log(`[jquants:${rid}] ${t} ${msg}`, obj);
 }
 
+function redactRefreshToken(url: string) {
+  try {
+    const u = new URL(url);
+    if (u.searchParams.has("refreshtoken")) u.searchParams.set("refreshtoken", "REDACTED");
+    return u.toString();
+  } catch {
+    return url.replace(/refreshtoken=[^&]+/i, "refreshtoken=REDACTED");
+  }
+}
+
+async function fetchWithTimeoutRetry(url: string, init: RequestInit, rid?: string) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+      return res;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      lastErr = err;
+      const cause = err?.cause ? ` cause=${String(err.cause)}` : "";
+      log(rid, "auth_refresh fetch failed", {
+        attempt: `${attempt + 1}/3`,
+        url: redactRefreshToken(url),
+        message: String(err?.message ?? err),
+        cause: cause ? String(err.cause) : undefined,
+      });
+      if (attempt >= 2) break;
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
+}
+
 async function safeJson(res: Response) {
   const text = await res.text();
   try {
@@ -46,11 +84,15 @@ async function getIdTokenFromRefresh(refreshToken: string, rid?: string) {
 
   log(rid, "auth_refresh start", { refreshTokenLen: refreshToken.length });
 
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-  });
+  const res = await fetchWithTimeoutRetry(
+    url.toString(),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+    },
+    rid
+  );
 
   const parsed = await safeJson(res);
   log(rid, "auth_refresh response", {

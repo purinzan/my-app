@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import React, { useMemo, useState } from "react";
 
 type Item = {
@@ -7,13 +8,20 @@ type Item = {
   code: string;
   company: Record<string, string> | null;
   score: number;
-  ret_mean: number;
-  volchg_ratio: number;
-  volat_rto_mean: number;
-  mom_n_days: number;
+  open_volatility_ratio: number;
+  gap_ratio: number;
+  volatility_spike_ratio: number;
+  intraday_momentum: number;
+  volume_surge_today: number;
 };
 
-type MetricKey = "score" | "ret_mean" | "volchg_ratio" | "volat_rto_mean" | "mom_n_days";
+type MetricKey =
+  | "score"
+  | "open_volatility_ratio"
+  | "gap_ratio"
+  | "volatility_spike_ratio"
+  | "intraday_momentum"
+  | "volume_surge_today";
 
 type Api = {
   ok: boolean;
@@ -47,14 +55,19 @@ export default function ScoreboardClient() {
     return d.toISOString().slice(0, 10);
   });
   const [limit, setLimit] = useState(100);
+  const [marketCap, setMarketCap] = useState("");
+  const [marketCapMode, setMarketCapMode] = useState<"over" | "under">("over");
 
   const [sync, setSync] = useState(true);
   const [force, setForce] = useState(false);
+  const [debug, setDebug] = useState(false);
 
-  const [w_ret, setWRet] = useState(0.35);
-  const [w_volchg, setWVolchg] = useState(0.25);
-  const [w_volat, setWVolat] = useState(0.2);
-  const [w_mom, setWMom] = useState(0.2);
+  const [w_openvol, setWOpenVol] = useState(0.25);
+  const [w_gap, setWGap] = useState(0.1);
+  const [w_spike, setWSpike] = useState(0.35);
+  const [w_intraday, setWIntraday] = useState(0.1);
+  const [w_volsurge, setWVolsurge] = useState(0.2);
+  const [openWeights, setOpenWeights] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -74,13 +87,19 @@ export default function ScoreboardClient() {
       qs.set("from", from);
       qs.set("to", to);
       qs.set("limit", String(limit));
+      const marketCapNum = Number(marketCap);
+      if (Number.isFinite(marketCapNum) && marketCapNum > 0) {
+        qs.set("marketCap", String(marketCapNum * 1_000_000_000));
+        qs.set("marketCapMode", marketCapMode);
+      }
       qs.set("sync", sync ? "1" : "0");
       qs.set("force", force ? "1" : "0");
-      qs.set("w_ret", String(w_ret));
-      qs.set("w_volchg", String(w_volchg));
-      qs.set("w_volat", String(w_volat));
-      qs.set("w_mom", String(w_mom));
-      qs.set("debug", "1"); // 迷ったら残す。不要なら消してOK
+      qs.set("w_openvol", String(w_openvol));
+      qs.set("w_gap", String(w_gap));
+      qs.set("w_spike", String(w_spike));
+      qs.set("w_intraday", String(w_intraday));
+      qs.set("w_volsurge", String(w_volsurge));
+      if (debug) qs.set("debug", "1");
 
       const res = await fetch(`/api/scoreboard?${qs.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as Api;
@@ -100,11 +119,32 @@ export default function ScoreboardClient() {
     () =>
       (
         [
-          { key: "score", label: "総合スコア", precision: 4, description: "重み付け後のスコア" },
-          { key: "ret_mean", label: "ret_mean", precision: 6, description: "平均リターン" },
-          { key: "volchg_ratio", label: "volchg_ratio", precision: 4, description: "出来高変化率" },
-          { key: "volat_rto_mean", label: "volat_rto_mean", precision: 6, description: "ボラティリティ" },
-          { key: "mom_n_days", label: "mom_n_days", precision: 6, description: "モメンタム" },
+          { key: "score", label: "Total Score", precision: 4, description: "weighted score" },
+          {
+            key: "open_volatility_ratio",
+            label: "OpenVolatilityRatio",
+            precision: 6,
+            description: "range / open for today",
+          },
+          { key: "gap_ratio", label: "GapRatio", precision: 6, description: "gap vs prev close" },
+          {
+            key: "volatility_spike_ratio",
+            label: "VolatilitySpikeRatio",
+            precision: 6,
+            description: "today vs recent volatility",
+          },
+          {
+            key: "intraday_momentum",
+            label: "IntradayMomentum",
+            precision: 6,
+            description: "close vs open",
+          },
+          {
+            key: "volume_surge_today",
+            label: "VolumeSurgeToday",
+            precision: 6,
+            description: "today volume vs avg",
+          },
         ] satisfies { key: MetricKey; label: string; precision: number; description: string }[]
       ).map((metric) => ({
         ...metric,
@@ -132,10 +172,11 @@ export default function ScoreboardClient() {
       "code",
       "company_name",
       "score",
-      "ret_mean",
-      "volchg_ratio",
-      "volat_rto_mean",
-      "mom_n_days",
+      "open_volatility_ratio",
+      "gap_ratio",
+      "volatility_spike_ratio",
+      "intraday_momentum",
+      "volume_surge_today",
     ];
 
     const escapeCell = (value: unknown) => {
@@ -153,10 +194,11 @@ export default function ScoreboardClient() {
           row.code,
           companyName,
           row.score,
-          row.ret_mean,
-          row.volchg_ratio,
-          row.volat_rto_mean,
-          row.mom_n_days,
+          row.open_volatility_ratio,
+          row.gap_ratio,
+          row.volatility_spike_ratio,
+          row.intraday_momentum,
+          row.volume_surge_today,
         ];
         return values.map(escapeCell).join(",");
       }),
@@ -175,6 +217,15 @@ export default function ScoreboardClient() {
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
+      <div className="flex justify-end">
+        <Link
+          href="/dashboard"
+          className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white no-underline hover:opacity-90 dark:bg-white dark:text-slate-900"
+        >
+          ダッシュボードへ
+        </Link>
+      </div>
+
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">from</div>
@@ -208,6 +259,45 @@ export default function ScoreboardClient() {
           />
         </div>
 
+        <div>
+          <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">時価総額(十億円)</div>
+          <input
+            type="number"
+            min={0}
+            value={marketCap}
+            onChange={(e) => setMarketCap(e.target.value)}
+            className="mt-1 w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950"
+            placeholder="例: 100"
+          />
+        </div>
+
+        <div className="mt-5 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMarketCapMode("over")}
+            className={[
+              "rounded-xl border px-3 py-2 text-xs font-semibold",
+              marketCapMode === "over"
+                ? "border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-900"
+                : "border-slate-200 bg-white text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200",
+            ].join(" ")}
+          >
+            以上
+          </button>
+          <button
+            type="button"
+            onClick={() => setMarketCapMode("under")}
+            className={[
+              "rounded-xl border px-3 py-2 text-xs font-semibold",
+              marketCapMode === "under"
+                ? "border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-900"
+                : "border-slate-200 bg-white text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200",
+            ].join(" ")}
+          >
+            以下
+          </button>
+        </div>
+
         <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
           <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} />
           同期する
@@ -216,6 +306,11 @@ export default function ScoreboardClient() {
         <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
           <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
           force
+        </label>
+
+        <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+          ログ出力
         </label>
 
         <button
@@ -228,6 +323,14 @@ export default function ScoreboardClient() {
         </button>
 
         <button
+          onClick={() => setOpenWeights(true)}
+          className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200"
+          type="button"
+        >
+          設定
+        </button>
+
+        <button
           onClick={downloadCsv}
           disabled={loading || csvRows.length === 0}
           className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200"
@@ -237,24 +340,65 @@ export default function ScoreboardClient() {
         </button>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-            <div className="text-slate-500">w_ret</div>
-            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_ret} onChange={(e) => setWRet((prev) => clampNumber(e.target.value, prev))} />
-          </div>
-          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-            <div className="text-slate-500">w_volchg</div>
-            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_volchg} onChange={(e) => setWVolchg((prev) => clampNumber(e.target.value, prev))} />
-          </div>
-          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-            <div className="text-slate-500">w_volat</div>
-            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_volat} onChange={(e) => setWVolat((prev) => clampNumber(e.target.value, prev))} />
-          </div>
-          <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
-            <div className="text-slate-500">w_mom</div>
-            <input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={w_mom} onChange={(e) => setWMom((prev) => clampNumber(e.target.value, prev))} />
+      {openWeights ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-800 dark:bg-slate-950">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">Weight settings</div>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-900"
+                onClick={() => setOpenWeights(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-5">
+              <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+                <div className="text-slate-500">w_openvol</div>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1"
+                  value={w_openvol}
+                  onChange={(e) => setWOpenVol((prev) => clampNumber(e.target.value, prev))}
+                />
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+                <div className="text-slate-500">w_gap</div>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1"
+                  value={w_gap}
+                  onChange={(e) => setWGap((prev) => clampNumber(e.target.value, prev))}
+                />
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+                <div className="text-slate-500">w_spike</div>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1"
+                  value={w_spike}
+                  onChange={(e) => setWSpike((prev) => clampNumber(e.target.value, prev))}
+                />
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+                <div className="text-slate-500">w_intraday</div>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1"
+                  value={w_intraday}
+                  onChange={(e) => setWIntraday((prev) => clampNumber(e.target.value, prev))}
+                />
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2 text-xs dark:border-slate-800">
+                <div className="text-slate-500">w_volsurge</div>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1"
+                  value={w_volsurge}
+                  onChange={(e) => setWVolsurge((prev) => clampNumber(e.target.value, prev))}
+                />
+              </div>
+            </div>
           </div>
         </div>
+      ) : null}
 
       {err ? (
         <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -274,18 +418,19 @@ export default function ScoreboardClient() {
         {rankedTables.map(({ key, label, precision, description, rows: rankedRows }) => (
           <div key={key} className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
             <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-100">
-              {label}
-              <span className="ml-2 text-xs font-normal text-slate-500">{description}</span>
+              <span title={description}>{label}</span>
             </div>
 
-            <div className="max-h-[520px] overflow-x-auto overflow-y-auto">
+            <div className="max-h-[360px] overflow-x-auto overflow-y-auto">
               <table className="min-w-[520px] w-full border-separate border-spacing-y-1">
                 <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900/80">
                   <tr className="text-left text-xs font-semibold text-slate-600 dark:text-slate-300">
                     <th className="px-2">Rank</th>
                     <th className="px-2">Code</th>
                     <th className="px-2">Company</th>
-                    <th className="px-2 text-right">{key === "score" ? "Score" : label}</th>
+                    <th className="px-2 text-right">
+                      <span title={description}>{key === "score" ? "Score" : label}</span>
+                    </th>
                   </tr>
                 </thead>
 

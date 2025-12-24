@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import dns from "dns";
 import { tursoClient } from "@/lib/db";
 import path from "path";
 import { readFile } from "fs/promises";
@@ -7,6 +8,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const BASE = "https://api.jquants.com/v1";
+dns.setDefaultResultOrder("ipv4first");
 
 type DailyQuote = {
   Date: string;
@@ -19,6 +21,7 @@ type DailyQuote = {
 };
 
 type CompanyRow = Record<string, string>;
+type MarketCapMode = "over" | "under";
 
 function ymd(d: Date) {
   const yyyy = d.getFullYear();
@@ -52,33 +55,80 @@ async function safeJson(res: Response) {
   }
 }
 
-async function fetchWithLog(url: string, init: RequestInit, label: string) {
+function redactRefreshToken(url: string) {
+  try {
+    const u = new URL(url);
+    if (u.searchParams.has("refreshtoken")) u.searchParams.set("refreshtoken", "REDACTED");
+    return u.toString();
+  } catch {
+    return url.replace(/refreshtoken=[^&]+/i, "refreshtoken=REDACTED");
+  }
+}
+
+async function fetchWithLog(url: string, init: RequestInit, label: string, debug: boolean) {
   try {
     return await fetch(url, init);
   } catch (e: any) {
-    console.error(
-      `[scoreboard][fetch] ${label} network error url=${url} message=${String(e?.message ?? e)}`
-    );
+    if (debug) {
+      console.error(
+        `[scoreboard][fetch] ${label} network error url=${redactRefreshToken(url)} message=${String(e?.message ?? e)}`
+      );
+    }
     throw e;
   }
 }
 
-async function getIdToken() {
+async function fetchWithTimeoutRetry(
+  url: string,
+  init: RequestInit,
+  opts: { retries: number; timeoutMs: number; label: string; debug: boolean }
+) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= opts.retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), opts.timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+      return res;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      lastErr = err;
+      const cause = err?.cause ? ` cause=${String(err.cause)}` : "";
+      console.error(
+        `[scoreboard][fetch] ${opts.label} failed attempt=${attempt + 1}/${opts.retries + 1} url=${redactRefreshToken(
+          url
+        )} message=${String(err?.message ?? err)}${cause}`
+      );
+      if (attempt >= opts.retries) break;
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
+}
+
+async function getIdToken(debug: boolean) {
   const refreshToken = process.env.JQUANTS_REFRESH_TOKEN;
   if (!refreshToken) throw new Error("ENV missing: JQUANTS_REFRESH_TOKEN");
 
   const url = `${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`;
-  const r = await fetchWithLog(url, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-  }, "auth_refresh");
+  const r = await fetchWithTimeoutRetry(
+    url,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    },
+    { retries: 2, timeoutMs: 10000, label: "auth_refresh", debug }
+  );
 
   const p = await safeJson(r);
   if (!p.ok) {
-    console.error(
-      `[scoreboard][fetch] auth_refresh bad status=${r.status} body=${p.text.slice(0, 200)}`
-    );
+    if (debug) {
+      console.error(
+        `[scoreboard][fetch] auth_refresh bad status=${r.status} body=${p.text.slice(0, 200)}`
+      );
+    }
     throw new Error(`auth_refresh failed: ${p.text}`);
   }
   const idToken = String(p.json?.idToken ?? "");
@@ -86,7 +136,7 @@ async function getIdToken() {
   return idToken;
 }
 
-async function fetchTradingDays(idToken: string, from: string, to: string) {
+async function fetchTradingDays(idToken: string, from: string, to: string, debug: boolean) {
   const url = new URL(`${BASE}/markets/trading_calendar`);
   url.searchParams.set("from", from);
   url.searchParams.set("to", to);
@@ -94,13 +144,15 @@ async function fetchTradingDays(idToken: string, from: string, to: string) {
   const r = await fetchWithLog(url.toString(), {
     headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
     cache: "no-store",
-  }, "trading_calendar");
+  }, "trading_calendar", debug);
 
   const p = await safeJson(r);
   if (!p.ok) {
-    console.error(
-      `[scoreboard][fetch] trading_calendar bad status=${r.status} body=${p.text.slice(0, 200)}`
-    );
+    if (debug) {
+      console.error(
+        `[scoreboard][fetch] trading_calendar bad status=${r.status} body=${p.text.slice(0, 200)}`
+      );
+    }
     throw new Error(`trading_calendar failed: ${p.text}`);
   }
 
@@ -114,7 +166,7 @@ async function fetchTradingDays(idToken: string, from: string, to: string) {
   return days;
 }
 
-async function fetchDailyQuotesAllPages(idToken: string, date: string) {
+async function fetchDailyQuotesAllPages(idToken: string, date: string, debug: boolean) {
   const all: DailyQuote[] = [];
   let paginationKey = "";
   let guard = 0;
@@ -127,13 +179,15 @@ async function fetchDailyQuotesAllPages(idToken: string, date: string) {
     const r = await fetchWithLog(url.toString(), {
       headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
       cache: "no-store",
-    }, `daily_quotes ${date}`);
+    }, `daily_quotes ${date}`, debug);
 
     const p = await safeJson(r);
     if (!p.ok) {
-      console.error(
-        `[scoreboard][fetch] daily_quotes bad status=${r.status} date=${date} body=${p.text.slice(0, 200)}`
-      );
+      if (debug) {
+        console.error(
+          `[scoreboard][fetch] daily_quotes bad status=${r.status} date=${date} body=${p.text.slice(0, 200)}`
+        );
+      }
       throw new Error(`daily_quotes failed (${date}): ${p.text}`);
     }
 
@@ -162,6 +216,86 @@ async function fetchDailyQuotesAllPages(idToken: string, date: string) {
   }
 
   return all;
+}
+
+async function fetchDailyQuotesByCodeAllPages(
+  idToken: string,
+  code: string,
+  from: string,
+  to: string,
+  debug: boolean
+) {
+  const all: DailyQuote[] = [];
+  let paginationKey = "";
+  let guard = 0;
+
+  while (true) {
+    const url = new URL(`${BASE}/prices/daily_quotes`);
+    url.searchParams.set("code", code);
+    url.searchParams.set("from", from);
+    url.searchParams.set("to", to);
+    if (paginationKey) url.searchParams.set("pagination_key", paginationKey);
+
+    const r = await fetchWithLog(url.toString(), {
+      headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
+      cache: "no-store",
+    }, `daily_quotes ${code} ${from}-${to}`, debug);
+
+    const p = await safeJson(r);
+    if (!p.ok) {
+      if (debug) {
+        console.error(
+          `[scoreboard][fetch] daily_quotes bad status=${r.status} code=${code} body=${p.text.slice(0, 200)}`
+        );
+      }
+      throw new Error(`daily_quotes failed (${code}): ${p.text}`);
+    }
+
+    const qs = Array.isArray(p.json?.daily_quotes) ? p.json.daily_quotes : [];
+    for (const q of qs) {
+      const c = normalizeCode(String(q?.Code ?? ""));
+      const dt = String(q?.Date ?? "");
+      if (!c || !dt) continue;
+
+      all.push({
+        Date: dt,
+        Code: c,
+        Open: q?.Open == null ? null : Number(q.Open),
+        High: q?.High == null ? null : Number(q.High),
+        Low: q?.Low == null ? null : Number(q.Low),
+        Close: q?.Close == null ? null : Number(q.Close),
+        Volume: q?.Volume == null ? null : Number(q.Volume),
+      });
+    }
+
+    paginationKey = String(p.json?.pagination_key ?? "");
+    if (!paginationKey) break;
+
+    guard++;
+    if (guard > 200) throw new Error("pagination too long (safety stop)");
+  }
+
+  return all;
+}
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+) {
+  const results: R[] = [];
+  let nextIndex = 0;
+
+  async function runOne() {
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      results[current] = await worker(items[current], current);
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, limit) }, () => runOne());
+  await Promise.all(workers);
+  return results;
 }
 
 async function ensureIngestLogTable() {
@@ -328,6 +462,10 @@ function mean(arr: number[]) {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
+function openVolatilityRatio(bar: Bar) {
+  return bar.open !== 0 ? (bar.high - bar.low) / bar.open : NaN;
+}
+
 function percentile01(values: number[]) {
   // pandasの rank(pct=True, method="average") 的（最小>0、最大=1）
   const sorted = [...values].sort((a, b) => a - b);
@@ -351,6 +489,9 @@ export async function GET(req: Request) {
   const debug = u.searchParams.get("debug") === "1";
 
   const dbg: any = {};
+  const log = (...args: any[]) => {
+    if (debug) console.log(...args);
+  };
 
   try {
     const to = u.searchParams.get("to") ?? ymd(new Date());
@@ -359,19 +500,20 @@ export async function GET(req: Request) {
     const limit = Math.max(10, Math.min(500, Number(u.searchParams.get("limit") ?? 100)));
     const sync = (u.searchParams.get("sync") ?? "1") !== "0";
     const force = (u.searchParams.get("force") ?? "0") === "1";
+    const marketCapRaw = u.searchParams.get("marketCap");
+    const marketCapValue = Number(marketCapRaw ?? "");
+    const marketCapMode = (u.searchParams.get("marketCapMode") ?? "over") as MarketCapMode;
 
     // score_scan.py 既定に寄せる
-    const n_ret = Math.max(1, Number(u.searchParams.get("n_ret") ?? 9));
-    const n_vol_short = Math.max(1, Number(u.searchParams.get("n_vol_short") ?? 10));
-    const n_vol_long = Math.max(1, Number(u.searchParams.get("n_vol_long") ?? 60));
-    const n_vola = Math.max(1, Number(u.searchParams.get("n_vola") ?? 10));
-    const n_mom = Math.max(1, Number(u.searchParams.get("n_mom") ?? 3));
+    const n_vol_short = Math.max(1, Math.min(60, Number(u.searchParams.get("n_vol_short") ?? 10)));
+    const n_vola = Math.max(1, Math.min(60, Number(u.searchParams.get("n_vola") ?? 10)));
 
-    const w_ret = Number(u.searchParams.get("w_ret") ?? 0.35);
-    const w_volchg = Number(u.searchParams.get("w_volchg") ?? 0.25);
-    const w_volat = Number(u.searchParams.get("w_volat") ?? 0.2);
-    const w_mom = Number(u.searchParams.get("w_mom") ?? 0.2);
-    const w_sum = Math.max(1e-9, w_ret + w_volchg + w_volat + w_mom);
+    const w_openvol = Number(u.searchParams.get("w_openvol") ?? 0.25);
+    const w_gap = Number(u.searchParams.get("w_gap") ?? 0.1);
+    const w_spike = Number(u.searchParams.get("w_spike") ?? 0.35);
+    const w_intraday = Number(u.searchParams.get("w_intraday") ?? 0.1);
+    const w_volsurge = Number(u.searchParams.get("w_volsurge") ?? 0.2);
+    const w_sum = Math.max(1e-9, w_openvol + w_gap + w_spike + w_intraday + w_volsurge);
 
     const toDate = new Date(`${to}T00:00:00`);
     if (Number.isNaN(toDate.getTime())) {
@@ -386,6 +528,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "from must be <= to" }, { status: 400 });
     }
     const from = ymd(fromDate);
+    const hasMarketCapFilter =
+      Number.isFinite(marketCapValue) &&
+      marketCapValue > 0 &&
+      (marketCapMode === "over" || marketCapMode === "under");
 
     if (debug) {
       dbg.params = {
@@ -395,47 +541,101 @@ export async function GET(req: Request) {
         limit,
         sync,
         force,
-        n_ret,
+        marketCap: hasMarketCapFilter ? marketCapValue : null,
+        marketCapMode: hasMarketCapFilter ? marketCapMode : null,
         n_vol_short,
-        n_vol_long,
         n_vola,
-        n_mom,
-        w_ret,
-        w_volchg,
-        w_volat,
-        w_mom,
+        w_openvol,
+        w_gap,
+        w_spike,
+        w_intraday,
+        w_volsurge,
       };
     }
+    log(
+      `[scoreboard] request from=${from} to=${to} sync=${sync} force=${force} limit=${limit} marketCap=${hasMarketCapFilter ? marketCapValue : "none"}`
+    );
 
     // 会社マスタ
     const companyMap = await loadCompanyMapFromPublicCsv();
+    let allowedCodes: Set<string> | null = null;
+    if (hasMarketCapFilter) {
+      const mode = marketCapMode === "under" ? "under" : "over";
+      allowedCodes = new Set<string>();
+      for (const [code, row] of companyMap.entries()) {
+        const raw = row["MarketCap"];
+        const cap = raw == null || raw === "" ? NaN : Number(raw);
+        if (!Number.isFinite(cap)) continue;
+        if (mode === "under" ? cap <= marketCapValue : cap >= marketCapValue) {
+          allowedCodes.add(code);
+        }
+      }
+      log(`[scoreboard][filter] marketCap ${mode} ${marketCapValue} -> codes=${allowedCodes.size}`);
+    }
 
     // 同期（全銘柄×営業日）
     const syncInfo = { requestedDays: 0, fetchedDays: 0, skippedDays: 0, quotes: 0, upserted: 0 };
 
     if (sync) {
-      await ensureIngestLogTable();
-      const idToken = await getIdToken();
+      const idToken = await getIdToken(debug);
 
-      const days = await fetchTradingDays(idToken, from, to);
-      syncInfo.requestedDays = days.length;
+      if (hasMarketCapFilter && allowedCodes) {
+        const codes = Array.from(allowedCodes);
+        syncInfo.requestedDays = codes.length;
+        log(`[scoreboard][sync] codes=${codes.length} from=${from} to=${to}`);
 
-      if (debug) dbg.tradingDays = { requestedDays: days.length, first: days[0], last: days[days.length - 1] };
+        let fetchedCodes = 0;
+        const errors: string[] = [];
+        const concurrency = 6;
 
-      for (const d of days) {
-        if (!force && (await isIngested(d))) {
-          syncInfo.skippedDays++;
-          continue;
+        await runWithConcurrency(codes, concurrency, async (code, index) => {
+          try {
+            const quotes = await fetchDailyQuotesByCodeAllPages(idToken, code, from, to, debug);
+            if (quotes.length > 0) fetchedCodes += 1;
+            syncInfo.quotes += quotes.length;
+
+            const up = await upsertQuotes(quotes);
+            syncInfo.upserted += up;
+            log(`[scoreboard][sync] code=${code} fetched=${quotes.length} upserted=${up}`);
+          } catch (e: any) {
+            syncInfo.skippedDays += 1;
+            const msg = String(e?.message ?? e);
+            errors.push(`${code}:${msg}`);
+            console.error(`[scoreboard][sync] code=${code} failed message=${msg}`);
+          } finally {
+            if ((index + 1) % 200 === 0) {
+              log(`[scoreboard][sync] progress ${index + 1}/${codes.length}`);
+            }
+          }
+          return null;
+        });
+
+        syncInfo.fetchedDays = fetchedCodes;
+        if (errors.length && debug) dbg.syncErrors = errors.slice(0, 200);
+      } else {
+        await ensureIngestLogTable();
+        const days = await fetchTradingDays(idToken, from, to, debug);
+        syncInfo.requestedDays = days.length;
+        log(`[scoreboard][sync] days=${days.length} from=${from} to=${to}`);
+
+        if (debug) dbg.tradingDays = { requestedDays: days.length, first: days[0], last: days[days.length - 1] };
+
+        for (const d of days) {
+          if (!force && (await isIngested(d))) {
+            syncInfo.skippedDays++;
+            continue;
+          }
+
+          const quotes = await fetchDailyQuotesAllPages(idToken, d, debug);
+          syncInfo.fetchedDays++;
+          syncInfo.quotes += quotes.length;
+
+          const up = await upsertQuotes(quotes);
+          syncInfo.upserted += up;
+          log(`[scoreboard][sync] date=${d} fetched=${quotes.length} upserted=${up}`);
+
+          await markIngested(d, up);
         }
-
-        const quotes = await fetchDailyQuotesAllPages(idToken, d);
-        syncInfo.fetchedDays++;
-        syncInfo.quotes += quotes.length;
-
-        const up = await upsertQuotes(quotes);
-        syncInfo.upserted += up;
-
-        await markIngested(d, up);
       }
     }
 
@@ -449,12 +649,14 @@ export async function GET(req: Request) {
       `,
       args: [from, to],
     });
+    log(`[scoreboard][db] rows=${(res.rows as any[]).length}`);
 
     const byCode = new Map<string, Bar[]>();
 
     for (const r of res.rows as any[]) {
       const code = normalizeCode(String(r.code ?? ""));
       if (!code) continue;
+      if (allowedCodes && !allowedCodes.has(code)) continue;
 
       const open = Number(r.open);
       const high = Number(r.high);
@@ -474,68 +676,87 @@ export async function GET(req: Request) {
     // 指標計算
     const metrics: Array<{
       code: string;
-      ret_mean: number;
-      volchg_ratio: number;
-      volat_rto_mean: number;
-      mom_n_days: number;
+      open_volatility_ratio: number;
+      gap_ratio: number;
+      volatility_spike_ratio: number;
+      intraday_momentum: number;
+      volume_surge_today: number;
     }> = [];
 
     for (const [code, bars] of byCode.entries()) {
       bars.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
-      const need = Math.max(n_ret + 1, n_mom + 1, n_vol_short + 1, 10);
+      const need = Math.max(n_vola + 1, n_vol_short + 1, 2);
       if (bars.length < need) continue;
 
-      // ret_mean
-      const rets: number[] = [];
-      for (let i = 1; i < bars.length; i++) {
-        const prev = bars[i - 1].close;
-        const cur = bars[i].close;
-        if (prev !== 0) rets.push(cur / prev - 1);
+      const last = bars[bars.length - 1];
+      const prev = bars[bars.length - 2];
+
+      const openVol = openVolatilityRatio(last);
+      const gapRatio = prev.close !== 0 ? (last.open - prev.close) / prev.close : NaN;
+      const intradayMomentum = last.open !== 0 ? (last.close - last.open) / last.open : NaN;
+
+      const prevVols = bars
+        .slice(Math.max(0, bars.length - 1 - n_vola), bars.length - 1)
+        .map(openVolatilityRatio);
+      const prevVolMean = mean(prevVols);
+      const volatilitySpikeRatio = Number.isFinite(prevVolMean) && prevVolMean !== 0 ? openVol / prevVolMean : NaN;
+
+      const prevVolumes = bars
+        .slice(Math.max(0, bars.length - 1 - n_vol_short), bars.length - 1)
+        .map((b) => b.volume);
+      const prevVolumeMean = mean(prevVolumes);
+      const volumeSurgeToday =
+        Number.isFinite(prevVolumeMean) && prevVolumeMean !== 0 ? last.volume / prevVolumeMean : NaN;
+
+      if (
+        ![openVol, gapRatio, volatilitySpikeRatio, intradayMomentum, volumeSurgeToday].every((v) =>
+          Number.isFinite(v)
+        )
+      ) {
+        continue;
       }
-      const ret_mean = mean(rets.slice(-n_ret));
 
-      // volchg_ratio
-      const vols = bars.map((b) => b.volume);
-      const short = mean(vols.slice(-n_vol_short));
-      const ex = vols.slice(0, Math.max(0, vols.length - n_vol_short));
-      const long = mean(ex.slice(-Math.min(n_vol_long, ex.length)));
-      const volchg_ratio = Number.isFinite(long) && long !== 0 ? short / long : NaN;
-
-      // volat_rto_mean
-      const rto = bars.map((b) => (b.high - b.low) / b.open);
-      const volat_rto_mean = mean(rto.slice(-n_vola));
-
-      // mom_n_days
-      const last = bars[bars.length - 1].close;
-      const prev = bars[bars.length - 1 - n_mom].close;
-      const mom_n_days = prev !== 0 ? last / prev - 1 : NaN;
-
-      if (![ret_mean, volchg_ratio, volat_rto_mean, mom_n_days].every((v) => Number.isFinite(v))) continue;
-
-      metrics.push({ code, ret_mean, volchg_ratio, volat_rto_mean, mom_n_days });
+      metrics.push({
+        code,
+        open_volatility_ratio: openVol,
+        gap_ratio: gapRatio,
+        volatility_spike_ratio: volatilitySpikeRatio,
+        intraday_momentum: intradayMomentum,
+        volume_surge_today: volumeSurgeToday,
+      });
     }
 
-    const retVals = metrics.map((m) => m.ret_mean).filter((v) => Number.isFinite(v));
-    const volchgVals = metrics.map((m) => m.volchg_ratio).filter((v) => Number.isFinite(v));
-    const volatVals = metrics.map((m) => m.volat_rto_mean).filter((v) => Number.isFinite(v));
-    const momVals = metrics.map((m) => m.mom_n_days).filter((v) => Number.isFinite(v));
+    const openVolVals = metrics.map((m) => m.open_volatility_ratio).filter((v) => Number.isFinite(v));
+    const gapVals = metrics.map((m) => m.gap_ratio).filter((v) => Number.isFinite(v));
+    const spikeVals = metrics.map((m) => m.volatility_spike_ratio).filter((v) => Number.isFinite(v));
+    const intradayVals = metrics.map((m) => m.intraday_momentum).filter((v) => Number.isFinite(v));
+    const volSurgeVals = metrics.map((m) => m.volume_surge_today).filter((v) => Number.isFinite(v));
 
-    const pRet = percentile01(retVals);
-    const pVolchg = percentile01(volchgVals);
-    const pVolat = percentile01(volatVals);
-    const pMom = percentile01(momVals);
+    const pOpenVol = percentile01(openVolVals);
+    const pGap = percentile01(gapVals);
+    const pSpike = percentile01(spikeVals);
+    const pIntraday = percentile01(intradayVals);
+    const pVolSurge = percentile01(volSurgeVals);
 
     let missingCompanyInTop = 0;
+    log(`[scoreboard][compute] codesWithBars=${byCode.size} scoredCodes=${metrics.length}`);
 
     const ranked = metrics
       .map((m) => {
-        const ret_norm = pRet.get(m.ret_mean) ?? 0;
-        const volchg_norm = pVolchg.get(m.volchg_ratio) ?? 0;
-        const volat_norm = pVolat.get(m.volat_rto_mean) ?? 0;
-        const mom_norm = pMom.get(m.mom_n_days) ?? 0;
+        const openVolNorm = pOpenVol.get(m.open_volatility_ratio) ?? 0;
+        const gapNorm = pGap.get(m.gap_ratio) ?? 0;
+        const spikeNorm = pSpike.get(m.volatility_spike_ratio) ?? 0;
+        const intradayNorm = pIntraday.get(m.intraday_momentum) ?? 0;
+        const volSurgeNorm = pVolSurge.get(m.volume_surge_today) ?? 0;
 
-        const score = (w_ret * ret_norm + w_volchg * volchg_norm + w_volat * volat_norm + w_mom * mom_norm) / w_sum;
+        const score =
+          (w_openvol * openVolNorm +
+            w_gap * gapNorm +
+            w_spike * spikeNorm +
+            w_intraday * intradayNorm +
+            w_volsurge * volSurgeNorm) /
+          w_sum;
 
         const company = companyMap.get(m.code) ?? null;
 
@@ -543,10 +764,11 @@ export async function GET(req: Request) {
           code: m.code,
           company,
           score,
-          ret_mean: m.ret_mean,
-          volchg_ratio: m.volchg_ratio,
-          volat_rto_mean: m.volat_rto_mean,
-          mom_n_days: m.mom_n_days,
+          open_volatility_ratio: m.open_volatility_ratio,
+          gap_ratio: m.gap_ratio,
+          volatility_spike_ratio: m.volatility_spike_ratio,
+          intraday_momentum: m.intraday_momentum,
+          volume_surge_today: m.volume_surge_today,
         };
       })
       .sort((a, b) => b.score - a.score)
@@ -566,12 +788,11 @@ export async function GET(req: Request) {
         limit,
         sync,
         force,
-        n_ret,
+        marketCap: hasMarketCapFilter ? marketCapValue : null,
+        marketCapMode: hasMarketCapFilter ? marketCapMode : null,
         n_vol_short,
-        n_vol_long,
         n_vola,
-        n_mom,
-        weights: { w_ret, w_volchg, w_volat, w_mom },
+        weights: { w_openvol, w_gap, w_spike, w_intraday, w_volsurge },
       },
       sync: syncInfo,
       universe: {

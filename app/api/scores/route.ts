@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { tursoClient } from "@/lib/db";
+import path from "path";
+import { readFile } from "fs/promises";
+import dns from "dns";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const BASE = "https://api.jquants.com/v1";
+dns.setDefaultResultOrder("ipv4first");
+type MarketCapMode = "over" | "under";
 
 type DailyQuote = {
   Date: string;
@@ -22,6 +27,96 @@ function normalizeCode(x: string) {
   const m = s.match(/(\d{4})/);
   return m ? m[1] : "";
 }
+
+function detectDelimiter(line: string) {
+  const tab = (line.match(/	/g) ?? []).length;
+  const comma = (line.match(/,/g) ?? []).length;
+  return tab > comma ? "	" : ",";
+}
+
+function splitCsvLine(line: string, delim: string) {
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (!inQuotes && ch === delim) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  out.push(cur);
+  return out.map((s) => s.trim());
+}
+
+let cachedMarketCapMap: Map<string, number> | null = null;
+
+async function loadMarketCapMapFromPublicCsv() {
+  if (cachedMarketCapMap) return cachedMarketCapMap;
+
+  const csvPath = path.join(process.cwd(), "public", "listed_info.csv");
+  let buf: Buffer;
+  try {
+    buf = await readFile(csvPath);
+  } catch {
+    cachedMarketCapMap = new Map();
+    return cachedMarketCapMap;
+  }
+
+  let text = buf.toString("utf8").replace(/^﻿/, "");
+  text = text.replace(/
+
+/g, "
+").replace(/
+/g, "
+").trim();
+  const lines = text.split("
+").filter(Boolean);
+  if (lines.length < 2) {
+    cachedMarketCapMap = new Map();
+    return cachedMarketCapMap;
+  }
+
+  const delim = detectDelimiter(lines[0]);
+  const headers = splitCsvLine(lines[0], delim).map((h) => h.replace(/^"|"$/g, "").trim());
+  const idxCode = headers.indexOf("Code");
+  const idxCap = headers.indexOf("MarketCap");
+  if (idxCode < 0 || idxCap < 0) {
+    cachedMarketCapMap = new Map();
+    return cachedMarketCapMap;
+  }
+
+  const map = new Map<string, number>();
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCsvLine(lines[i], delim).map((v) => v.replace(/^"|"$/g, "").trim());
+    const code = normalizeCode(String(cols[idxCode] ?? ""));
+    if (!code) continue;
+    const capRaw = String(cols[idxCap] ?? "");
+    const cap = Number(capRaw);
+    if (!Number.isFinite(cap)) continue;
+    map.set(code, cap);
+  }
+
+  cachedMarketCapMap = map;
+  return cachedMarketCapMap;
+}
+
 
 function addMonths(base: Date, months: number) {
   const d = new Date(base);
@@ -47,11 +142,47 @@ async function safeJson(res: Response) {
   }
 }
 
+function redactRefreshToken(url: string) {
+  try {
+    const u = new URL(url);
+    if (u.searchParams.has("refreshtoken")) u.searchParams.set("refreshtoken", "REDACTED");
+    return u.toString();
+  } catch {
+    return url.replace(/refreshtoken=[^&]+/i, "refreshtoken=REDACTED");
+  }
+}
+
+async function fetchWithTimeoutRetry(url: string, init: RequestInit) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+      return res;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      lastErr = err;
+      const cause = err?.cause ? ` cause=${String(err.cause)}` : "";
+      console.error(
+        `[scores][fetch] auth_refresh failed attempt=${attempt + 1}/3 url=${redactRefreshToken(
+          url
+        )} message=${String(err?.message ?? err)}${cause}`
+      );
+      if (attempt >= 2) break;
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
+}
+
 async function getIdToken() {
   const refreshToken = process.env.JQUANTS_REFRESH_TOKEN;
   if (!refreshToken) throw new Error("ENV missing: JQUANTS_REFRESH_TOKEN");
 
-  const r = await fetch(`${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`, {
+  const url = `${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`;
+  const r = await fetchWithTimeoutRetry(url, {
     method: "POST",
     headers: { Accept: "application/json" },
     cache: "no-store",
@@ -104,6 +235,49 @@ async function fetchDailyQuotesAllPages(idToken: string, date: string) {
 
     const p = await safeJson(r);
     if (!p.ok) throw new Error(`daily_quotes failed (${date}): ${p.text}`);
+
+    const qs = Array.isArray(p.json?.daily_quotes) ? p.json.daily_quotes : [];
+    for (const q of qs) {
+      all.push({
+        Date: String(q?.Date ?? ""),
+        Code: normalizeCode(String(q?.Code ?? "")),
+        Open: q?.Open == null ? null : Number(q.Open),
+        High: q?.High == null ? null : Number(q.High),
+        Low: q?.Low == null ? null : Number(q.Low),
+        Close: q?.Close == null ? null : Number(q.Close),
+        Volume: q?.Volume == null ? null : Number(q.Volume),
+      });
+    }
+
+    paginationKey = String(p.json?.pagination_key ?? "");
+    if (!paginationKey) break;
+
+    guard += 1;
+    if (guard > 200) throw new Error("pagination too long (safety stop)");
+  }
+
+  return all;
+}
+
+async function fetchDailyQuotesByCodeAllPages(idToken: string, code: string, from: string, to: string) {
+  const all: DailyQuote[] = [];
+  let paginationKey = "";
+  let guard = 0;
+
+  while (true) {
+    const url = new URL(`${BASE}/prices/daily_quotes`);
+    url.searchParams.set("code", code);
+    url.searchParams.set("from", from);
+    url.searchParams.set("to", to);
+    if (paginationKey) url.searchParams.set("pagination_key", paginationKey);
+
+    const r = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
+      cache: "no-store",
+    });
+
+    const p = await safeJson(r);
+    if (!p.ok) throw new Error(`daily_quotes failed (${code}): ${p.text}`);
 
     const qs = Array.isArray(p.json?.daily_quotes) ? p.json.daily_quotes : [];
     for (const q of qs) {
@@ -204,6 +378,10 @@ function mean(arr: number[]) {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
+function openVolatilityRatio(bar: Bar) {
+  return bar.open !== 0 ? (bar.high - bar.low) / bar.open : NaN;
+}
+
 function percentile01(values: number[]) {
   // pandas rank(pct=True, method="average") 相当（最小=1/n, 最大=1）
   const sorted = [...values].sort((a, b) => a - b);
@@ -233,19 +411,20 @@ export async function GET(req: Request) {
     const limit = Math.max(10, Math.min(500, Number(u.searchParams.get("limit") ?? 100)));
     const sync = (u.searchParams.get("sync") ?? "1") !== "0";
     const force = (u.searchParams.get("force") ?? "0") === "1";
+    const marketCapRaw = u.searchParams.get("marketCap");
+    const marketCapValue = Number(marketCapRaw ?? "");
+    const marketCapMode = (u.searchParams.get("marketCapMode") ?? "over") as MarketCapMode;
 
     // score_scan.py のデフォルトに寄せる :contentReference[oaicite:4]{index=4}
-    const n_ret = Math.max(1, Number(u.searchParams.get("n_ret") ?? 9));
-    const n_vol_short = Math.max(1, Number(u.searchParams.get("n_vol_short") ?? 10));
-    const n_vol_long = Math.max(1, Number(u.searchParams.get("n_vol_long") ?? 60));
-    const n_vola = Math.max(1, Number(u.searchParams.get("n_vola") ?? 10));
-    const n_mom = Math.max(1, Number(u.searchParams.get("n_mom") ?? 3));
+    const n_vol_short = Math.max(1, Math.min(60, Number(u.searchParams.get("n_vol_short") ?? 10)));
+    const n_vola = Math.max(1, Math.min(60, Number(u.searchParams.get("n_vola") ?? 10)));
 
-    const w_ret = Number(u.searchParams.get("w_ret") ?? 0.35);
-    const w_volchg = Number(u.searchParams.get("w_volchg") ?? 0.25);
-    const w_volat = Number(u.searchParams.get("w_volat") ?? 0.2);
-    const w_mom = Number(u.searchParams.get("w_mom") ?? 0.2);
-    const w_sum = Math.max(1e-9, w_ret + w_volchg + w_volat + w_mom);
+    const w_openvol = Number(u.searchParams.get("w_openvol") ?? 0.25);
+    const w_gap = Number(u.searchParams.get("w_gap") ?? 0.1);
+    const w_spike = Number(u.searchParams.get("w_spike") ?? 0.35);
+    const w_intraday = Number(u.searchParams.get("w_intraday") ?? 0.1);
+    const w_volsurge = Number(u.searchParams.get("w_volsurge") ?? 0.2);
+    const w_sum = Math.max(1e-9, w_openvol + w_gap + w_spike + w_intraday + w_volsurge);
 
     const toDate = new Date(`${to}T00:00:00`);
     if (Number.isNaN(toDate.getTime())) {
@@ -260,29 +439,57 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "from must be <= to" }, { status: 400 });
     }
     const from = ymd(fromDate);
+    const hasMarketCapFilter =
+      Number.isFinite(marketCapValue) &&
+      marketCapValue > 0 &&
+      (marketCapMode === "over" || marketCapMode === "under");
+    const marketCapMap = hasMarketCapFilter ? await loadMarketCapMapFromPublicCsv() : null;
+    const allowedCodes = hasMarketCapFilter
+      ? new Set(
+          Array.from(marketCapMap?.entries() ?? [])
+            .filter(([_, cap]) => (marketCapMode === "under" ? cap <= marketCapValue : cap >= marketCapValue))
+            .map(([code]) => code)
+        )
+      : null;
 
     // --- 同期（全銘柄×営業日） ---
     const syncInfo = { requestedDays: 0, fetchedDays: 0, skippedDays: 0, quotes: 0, upserted: 0 };
 
     if (sync) {
-      await ensureIngestLogTable();
       const idToken = await getIdToken();
 
-      const days = await fetchTradingDays(idToken, from, to);
-      syncInfo.requestedDays = days.length;
+      if (hasMarketCapFilter && allowedCodes) {
+        const codes = Array.from(allowedCodes);
+        syncInfo.requestedDays = codes.length;
+        let fetchedCodes = 0;
 
-      for (const d of days) {
-        if (!force && (await isIngested(d))) {
-          syncInfo.skippedDays++;
-          continue;
+        for (const code of codes) {
+          const quotes = await fetchDailyQuotesByCodeAllPages(idToken, code, from, to);
+          if (quotes.length > 0) fetchedCodes += 1;
+          syncInfo.quotes += quotes.length;
+
+          const up = await upsertQuotes(quotes);
+          syncInfo.upserted += up;
         }
-        const quotes = await fetchDailyQuotesAllPages(idToken, d);
-        syncInfo.fetchedDays++;
-        syncInfo.quotes += quotes.length;
+        syncInfo.fetchedDays = fetchedCodes;
+      } else {
+        await ensureIngestLogTable();
+        const days = await fetchTradingDays(idToken, from, to);
+        syncInfo.requestedDays = days.length;
 
-        const up = await upsertQuotes(quotes);
-        syncInfo.upserted += up;
-        await markIngested(d, up);
+        for (const d of days) {
+          if (!force && (await isIngested(d))) {
+            syncInfo.skippedDays++;
+            continue;
+          }
+          const quotes = await fetchDailyQuotesAllPages(idToken, d);
+          syncInfo.fetchedDays++;
+          syncInfo.quotes += quotes.length;
+
+          const up = await upsertQuotes(quotes);
+          syncInfo.upserted += up;
+          await markIngested(d, up);
+        }
       }
     }
 
@@ -299,8 +506,9 @@ export async function GET(req: Request) {
 
     const byCode = new Map<string, Bar[]>();
     for (const r of res.rows as any[]) {
-      const code = String(r.code ?? "");
+      const code = normalizeCode(String(r.code ?? ""));
       if (!code) continue;
+      if (allowedCodes && !allowedCodes.has(code)) continue;
 
       const open = Number(r.open);
       const high = Number(r.high);
@@ -319,78 +527,85 @@ export async function GET(req: Request) {
 
     const metrics: Array<{
       code: string;
-      ret_mean: number;
-      volchg_ratio: number;
-      volat_rto_mean: number;
-      mom_n_days: number;
+      open_volatility_ratio: number;
+      gap_ratio: number;
+      volatility_spike_ratio: number;
+      intraday_momentum: number;
+      volume_surge_today: number;
     }> = [];
 
     for (const [code, bars] of byCode.entries()) {
       bars.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
-      const need = Math.max(n_ret + 1, n_mom + 1, 5);
+      const need = Math.max(n_vola + 1, n_vol_short + 1, 2);
       if (bars.length < need) continue;
 
-      // ret_mean: 直近n_ret日の close/prev_close -1 の平均 :contentReference[oaicite:6]{index=6}
-      const rets: number[] = [];
-      for (let i = 1; i < bars.length; i++) {
-        const prev = bars[i - 1].close;
-        const cur = bars[i].close;
-        if (prev !== 0) rets.push(cur / prev - 1);
-      }
-      const ret_mean = mean(rets.slice(-n_ret));
+      const last = bars[bars.length - 1];
+      const prev = bars[bars.length - 2];
 
-      // volchg_ratio: short平均 / long平均（longはshort期間除外） :contentReference[oaicite:7]{index=7}
-      const vols = bars.map((b) => b.volume);
-      const short = mean(vols.slice(-n_vol_short));
-      let long = NaN;
-      if (vols.length >= n_vol_short + 5) {
-        const ex = vols.slice(0, -n_vol_short);
-        long = mean(ex.slice(-n_vol_long));
-      } else {
-        long = mean(vols.slice(0, Math.max(1, Math.floor(vols.length / 2))));
-      }
-      const volchg_ratio = Number.isFinite(long) && long !== 0 ? short / long : NaN;
+      const openVol = openVolatilityRatio(last);
+      const gapRatio = prev.close !== 0 ? (last.open - prev.close) / prev.close : NaN;
+      const intradayMomentum = last.open !== 0 ? (last.close - last.open) / last.open : NaN;
 
-      // volat_rto_mean: (High-Low)/Open の直近n_vola平均 :contentReference[oaicite:8]{index=8}
-      const rto = bars.map((b) => (b.high - b.low) / b.open);
-      const volat_rto_mean = mean(rto.slice(-n_vola));
+      const prevVols = bars
+        .slice(Math.max(0, bars.length - 1 - n_vola), bars.length - 1)
+        .map(openVolatilityRatio);
+      const prevVolMean = mean(prevVols);
+      const volatilitySpikeRatio = Number.isFinite(prevVolMean) && prevVolMean !== 0 ? openVol / prevVolMean : NaN;
 
-      // mom_n_days: n_mom日前の終値からの変化率 :contentReference[oaicite:9]{index=9}
-      const last = bars[bars.length - 1].close;
-      const prev = bars[bars.length - 1 - n_mom].close;
-      const mom_n_days = prev !== 0 ? last / prev - 1 : NaN;
+      const prevVolumes = bars
+        .slice(Math.max(0, bars.length - 1 - n_vol_short), bars.length - 1)
+        .map((b) => b.volume);
+      const prevVolumeMean = mean(prevVolumes);
+      const volumeSurgeToday =
+        Number.isFinite(prevVolumeMean) && prevVolumeMean !== 0 ? last.volume / prevVolumeMean : NaN;
 
-      metrics.push({ code, ret_mean, volchg_ratio, volat_rto_mean, mom_n_days });
+      metrics.push({
+        code,
+        open_volatility_ratio: openVol,
+        gap_ratio: gapRatio,
+        volatility_spike_ratio: volatilitySpikeRatio,
+        intraday_momentum: intradayMomentum,
+        volume_surge_today: volumeSurgeToday,
+      });
     }
 
-    // percentile（0〜1）→ NaNは0 → 合成score :contentReference[oaicite:10]{index=10}
-    const retVals = metrics.map((m) => m.ret_mean).filter((v) => Number.isFinite(v));
-    const volchgVals = metrics.map((m) => m.volchg_ratio).filter((v) => Number.isFinite(v));
-    const volatVals = metrics.map((m) => m.volat_rto_mean).filter((v) => Number.isFinite(v));
-    const momVals = metrics.map((m) => m.mom_n_days).filter((v) => Number.isFinite(v));
+    const openVolVals = metrics.map((m) => m.open_volatility_ratio).filter((v) => Number.isFinite(v));
+    const gapVals = metrics.map((m) => m.gap_ratio).filter((v) => Number.isFinite(v));
+    const spikeVals = metrics.map((m) => m.volatility_spike_ratio).filter((v) => Number.isFinite(v));
+    const intradayVals = metrics.map((m) => m.intraday_momentum).filter((v) => Number.isFinite(v));
+    const volSurgeVals = metrics.map((m) => m.volume_surge_today).filter((v) => Number.isFinite(v));
 
-    const pRet = percentile01(retVals);
-    const pVolchg = percentile01(volchgVals);
-    const pVolat = percentile01(volatVals);
-    const pMom = percentile01(momVals);
+    const pOpenVol = percentile01(openVolVals);
+    const pGap = percentile01(gapVals);
+    const pSpike = percentile01(spikeVals);
+    const pIntraday = percentile01(intradayVals);
+    const pVolSurge = percentile01(volSurgeVals);
 
     const items = metrics
       .map((m) => {
-        const ret_norm = Number.isFinite(m.ret_mean) ? (pRet.get(m.ret_mean) ?? 0) : 0;
-        const volchg_norm = Number.isFinite(m.volchg_ratio) ? (pVolchg.get(m.volchg_ratio) ?? 0) : 0;
-        const volat_norm = Number.isFinite(m.volat_rto_mean) ? (pVolat.get(m.volat_rto_mean) ?? 0) : 0;
-        const mom_norm = Number.isFinite(m.mom_n_days) ? (pMom.get(m.mom_n_days) ?? 0) : 0;
+        const openVolNorm = pOpenVol.get(m.open_volatility_ratio) ?? 0;
+        const gapNorm = pGap.get(m.gap_ratio) ?? 0;
+        const spikeNorm = pSpike.get(m.volatility_spike_ratio) ?? 0;
+        const intradayNorm = pIntraday.get(m.intraday_momentum) ?? 0;
+        const volSurgeNorm = pVolSurge.get(m.volume_surge_today) ?? 0;
 
-        const score = (w_ret * ret_norm + w_volchg * volchg_norm + w_volat * volat_norm + w_mom * mom_norm) / w_sum;
+        const score =
+          (w_openvol * openVolNorm +
+            w_gap * gapNorm +
+            w_spike * spikeNorm +
+            w_intraday * intradayNorm +
+            w_volsurge * volSurgeNorm) /
+          w_sum;
 
         return {
           code: m.code,
           score,
-          ret_mean: m.ret_mean,
-          volchg_ratio: m.volchg_ratio,
-          volat_rto_mean: m.volat_rto_mean,
-          mom_n_days: m.mom_n_days,
+          open_volatility_ratio: m.open_volatility_ratio,
+          gap_ratio: m.gap_ratio,
+          volatility_spike_ratio: m.volatility_spike_ratio,
+          intraday_momentum: m.intraday_momentum,
+          volume_surge_today: m.volume_surge_today,
         };
       })
       .sort((a, b) => b.score - a.score)
@@ -404,12 +619,11 @@ export async function GET(req: Request) {
         from,
         to,
         monthsBack: fromParam ? null : monthsBack,
-        n_ret,
+        marketCap: hasMarketCapFilter ? marketCapValue : null,
+        marketCapMode: hasMarketCapFilter ? marketCapMode : null,
         n_vol_short,
-        n_vol_long,
         n_vola,
-        n_mom,
-        weights: { w_ret, w_volchg, w_volat, w_mom },
+        weights: { w_openvol, w_gap, w_spike, w_intraday, w_volsurge },
       },
       sync: syncInfo,
       universe: { barsInDb: (res.rows as any[]).length, scoredCodes: metrics.length },

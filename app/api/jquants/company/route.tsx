@@ -1,12 +1,49 @@
 import { NextResponse } from "next/server";
+import dns from "dns";
 
 const BASE = "https://api.jquants.com/v1";
+dns.setDefaultResultOrder("ipv4first");
+
+function redactRefreshToken(url: string) {
+  try {
+    const u = new URL(url);
+    if (u.searchParams.has("refreshtoken")) u.searchParams.set("refreshtoken", "REDACTED");
+    return u.toString();
+  } catch {
+    return url.replace(/refreshtoken=[^&]+/i, "refreshtoken=REDACTED");
+  }
+}
+
+async function fetchWithTimeoutRetry(url: string, init: RequestInit) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+      return res;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      lastErr = err;
+      const cause = err?.cause ? ` cause=${String(err.cause)}` : "";
+      console.error(
+        `[jquants-company][fetch] auth_refresh failed attempt=${attempt + 1}/3 url=${redactRefreshToken(
+          url
+        )} message=${String(err?.message ?? err)}${cause}`
+      );
+      if (attempt >= 2) break;
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
+}
 
 async function getIdToken(refreshToken: string) {
   const url = new URL(`${BASE}/token/auth_refresh`);
   url.searchParams.set("refreshtoken", refreshToken);
 
-  const res = await fetch(url.toString(), {
+  const res = await fetchWithTimeoutRetry(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
